@@ -1,13 +1,60 @@
 #!/usr/bin/env python3
 
 # Imports
+import os
 import sys
+import time
+import argparse
 import cv2
 import numpy as np
 import json
 from functools import partial
 from numpy import mean
 COLORS = {"White": (255, 255, 255), "Yellow": (0, 255, 255), "Orange": (0, 165, 255), "Red": (0, 0, 255), "Green": (0, 255, 0), "Blue": (255, 0, 0)}
+
+
+# ---------------------------------------------------------------------------
+# Câmera (webcam local ou stream do celular) -- mesmas funções do main.py
+# ---------------------------------------------------------------------------
+def aplicar_orientacao(frame, rotate=0, flip=False):
+    rot_map = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
+    if rotate in rot_map:
+        frame = cv2.rotate(frame, rot_map[rotate])
+    if flip:
+        frame = cv2.flip(frame, 1)
+    return frame
+
+
+def ajustar_frame(frame):
+    """Altura 480; corta as laterais se passar de 640 (igual ao main.py)."""
+    h, w = frame.shape[:2]
+    if h == 480 and w == 640:
+        return frame
+    frame = cv2.resize(frame, (int(w * 480.0 / h), 480))
+    if frame.shape[1] > 640:
+        x0 = (frame.shape[1] - 640) // 2
+        frame = frame[:, x0:x0 + 640]
+    return frame
+
+
+def abrir_camera(cam_source):
+    cap = cv2.VideoCapture(cam_source)
+    if not cap.isOpened():
+        raise RuntimeError(f"Não foi possível abrir a câmera: {cam_source}")
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    if isinstance(cam_source, int):
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    return cap
+
+
+def ler_frame(cap, rotate=0, flip=False, tentativas=120):
+    for _ in range(tentativas):
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            return ajustar_frame(aplicar_orientacao(frame, rotate, flip))
+        time.sleep(0.02)
+    raise RuntimeError("Não consegui ler a câmera. Confira a URL/índice e a rede.")
 
 
 def getLimits(window_name):
@@ -34,7 +81,8 @@ def mouseClick(event, x, y, flags, param, window_name, img_dict):
     if event == cv2.EVENT_LBUTTONDOWN:
         
         image = img_dict['image']
-        b, g, r = image[y, x]
+        y0, x0 = max(y - 3, 0), max(x - 3, 0)
+        b, g, r = [int(v) for v in np.mean(image[y0:y + 4, x0:x + 4], axis=(0, 1))]
     
         range = 30
 
@@ -51,7 +99,7 @@ def mouseClick(event, x, y, flags, param, window_name, img_dict):
             cv2.setTrackbarPos(limit, window_name, limits[limit])
 
 
-def run(colors_class):
+def run(colors_class, cam_source=0, rotate=0, flip=False):
     
 
     # Create windows
@@ -78,10 +126,8 @@ def run(colors_class):
 
 
     # Select camera and get first frame
-    capture = cv2.VideoCapture(0)
-    capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    _, image = capture.read()
+    capture = abrir_camera(cam_source)
+    image = ler_frame(capture, rotate, flip)
     #image = cv2.flip(image, 1)
     img_dict = {'image': image}
 
@@ -108,7 +154,7 @@ def run(colors_class):
             color_calibrated = False
         
         # Update image from camera
-        _, image = capture.read()
+        image = ler_frame(capture, rotate, flip)
         #image = cv2.flip(image, 1)
         img_dict['image'] = image
         cv2.putText(image, f"Let's Calibrate {colors[color]} color", (20, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS[colors[color]], 2)
@@ -142,8 +188,10 @@ def run(colors_class):
                     average = (mean([max[0], min[0]]), mean([max[1], min[1]]), mean([max[2], min[2]]))
                     colors_class.update_prominent_color(color.lower(), average)
                     #save to file
+                os.makedirs('resources', exist_ok=True)
                 with open('resources/colors.json', 'w') as f:
                     json.dump(colors_class.prominent_color_palette, f)
+                capture.release()
                 cv2.destroyAllWindows()
                 return
             color_calibrated = True
@@ -156,5 +204,10 @@ def run(colors_class):
 
 if __name__ == '__main__':
     import helpers
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cam", default="0")
+    ap.add_argument("--rotate", type=int, choices=[0, 90, 180, 270], default=0)
+    ap.add_argument("--flip", action="store_true")
+    a = ap.parse_args()
     colors = helpers.Colors()
-    run(colors)
+    run(colors, int(a.cam) if a.cam.isdigit() else a.cam, a.rotate, a.flip)

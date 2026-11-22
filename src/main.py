@@ -13,8 +13,13 @@ import calibrate
 
 
 # ---------------------------------------------------------------------------
-# Câmera
+# Câmera (suporta índice local 0/1/2... ou URL de stream do celular)
 # ---------------------------------------------------------------------------
+
+# Se quiser deixar uma URL padrão do celular direto no código, coloque aqui;
+# caso contrário, deixe None e passe via --cam (ex.: http://192.168.0.20:8080/video)
+DEFAULT_CAM_SOURCE = None
+
 
 def get_average_bgr(frame, cx, cy, radius=3):
     """Calcula a média BGR de uma janela (2*radius+1)x(2*radius+1) ao redor de (cx, cy)."""
@@ -28,12 +33,43 @@ def get_average_bgr(frame, cx, cy, radius=3):
     return np.mean(region, axis=(0, 1))
 
 
-def warmup_camera(cap, num_frames=30, delay=0.05):
-    """Descarta frames iniciais para a câmera estabilizar exposição e brilho."""
+def abrir_camera(cam_source):
+    """Abre webcam local (int) ou stream de celular (URL/RTSP) com menor latência."""
+    cap = cv2.VideoCapture(cam_source)
+    if not cap.isOpened():
+        raise RuntimeError(f"Não foi possível abrir a câmera: {cam_source}")
+
+    # Reduz buffer para evitar atraso em streams de rede/celular
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    if isinstance(cam_source, int):
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    return cap
+
+
+def warmup_camera(cap, num_frames=30, delay=0.05, rotate=0, flip=False):
+    """Descarta frames iniciais para a câmera estabilizar exposição, foco e brilho."""
     for _ in range(num_frames):
-        cap.read()
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            _ = aplicar_orientacao(frame, rotate=rotate, flip=flip)
         if delay > 0:
             time.sleep(delay)
+
+
+def aplicar_orientacao(frame, rotate=0, flip=False):
+    """Aplica rotação (0, 90, 180, 270) e espelhamento horizontal se necessário."""
+    rot_map = {
+        90: cv2.ROTATE_90_CLOCKWISE,
+        180: cv2.ROTATE_180,
+        270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+    }
+    if rotate in rot_map:
+        frame = cv2.rotate(frame, rot_map[rotate])
+    if flip:
+        frame = cv2.flip(frame, 1)
+    return frame
 
 
 def ajustar_frame(frame):
@@ -50,14 +86,15 @@ def ajustar_frame(frame):
     return frame
 
 
-def ler_frame(cap, tentativas=100):
-    """Lê um frame; em stream de rede (celular) uma leitura pode falhar de vez em quando."""
+def ler_frame(cap, rotate=0, flip=False, tentativas=120):
+    """Lê um frame; em stream de rede (celular) tolera falhas momentâneas."""
     for _ in range(tentativas):
         ok, frame = cap.read()
         if ok and frame is not None:
+            frame = aplicar_orientacao(frame, rotate=rotate, flip=flip)
             return ajustar_frame(frame)
         time.sleep(0.02)
-    raise RuntimeError("Não consegui ler a câmera. Confira o índice ou a URL (--cam).")
+    raise RuntimeError("Não consegui ler a câmera do celular. Confira a URL/índice e a rede/USB.")
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +102,10 @@ def ler_frame(cap, tentativas=100):
 # ---------------------------------------------------------------------------
 
 class Face:
-    def __init__(self, name, class_colors, history_size=7, min_votes=5):
+    def __init__(self, name, class_colors, cam_rotate=0, cam_flip=False, history_size=7, min_votes=5):
         self.class_colors = class_colors
+        self.cam_rotate = cam_rotate
+        self.cam_flip = cam_flip
         self.face = [[None, None, None],
                      [None, None, None],
                      [None, None, None]]
@@ -184,8 +223,8 @@ class Face:
 
     def scan(self, cap, wanted_color):
         while True:
-            frame = ler_frame(cap)
-            raw = frame.copy()   # cópia limpa (sem desenhos) usada para ler as cores
+            frame = ler_frame(cap, rotate=self.cam_rotate, flip=self.cam_flip)
+            raw = frame.copy()
 
             grayFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             blurredFrame = cv2.blur(grayFrame, (3, 3))
@@ -247,8 +286,6 @@ class Face:
 
         if None not in self.face[0] and None not in self.face[1] and None not in self.face[2]:
             self.scanned = True
-            # Orientação "de fábrica". O solver_cubo abaixo ainda testa as outras rotações
-            # automaticamente se esta não produzir um cubo válido.
             if self.name == 'white':
                 self.face = np.rot90(self.face, 3)
             elif self.name == 'orange':
@@ -277,12 +314,6 @@ def all_scanned(faces):
 # ---------------------------------------------------------------------------
 # String do cubo (Kociemba) + verificação das peças
 # ---------------------------------------------------------------------------
-# O twophase espera 54 letras na ordem das faces U R F D L B.
-# ATENÇÃO: a lista abaixo é zipada com "URFDLB", então as faces OPOSTAS têm que ficar
-# em pares: U/D = amarelo/branco, R/L = verde/azul, F/B = vermelho/laranja.
-# (Uma ordem como yellow, blue, red, green, orange, white coloca amarelo oposto ao verde,
-#  o que não existe num cubo real e gera "Some edges are undefined" sempre.)
-# Esquema padrão: amarelo em cima, vermelho na frente => verde à direita.
 
 ORDEM = ['yellow', 'green', 'red', 'white', 'blue', 'orange']     # U R F D L B
 LETRA = dict(zip(ORDEM, "URFDLB"))
@@ -291,7 +322,7 @@ FACES_K = "URFDLB"
 
 def _pos_facelet(face, i, j):
     """Posição 3D (peça) e normal do adesivo (linha i, coluna j) de uma face, vista de fora."""
-    if face == 'U': return (j - 1, 1, i - 1), (0, 1, 0)       # topo da imagem = trás
+    if face == 'U': return (j - 1, 1, i - 1), (0, 1, 0)
     if face == 'R': return (1, 1 - i, 1 - j), (1, 0, 0)
     if face == 'F': return (j - 1, 1 - i, 1), (0, 0, 1)
     if face == 'D': return (j - 1, -1, 1 - i), (0, -1, 0)
@@ -373,8 +404,7 @@ def blocos_das_faces(faces):
 
 
 def resolver_cubo(faces, max_len=24, timeout=5):
-    """Monta a string, confere as peças, corrige orientação de face se preciso e chama o Kociemba.
-    Devolve a string da solução (ex.: 'R1 U3 F2 (3f)') ou None."""
+    """Monta a string, confere as peças, corrige orientação de face se preciso e chama o Kociemba."""
     blocos = blocos_das_faces(faces)
     original = "".join("".join(b) for b in blocos)
 
@@ -427,15 +457,11 @@ def parse_solution(sol):
     return out
 
 
-PAUSA = 0.15             # pausa entre comandos só na simulação (sem robô)
-robo = None              # vira um BLERobo quando você roda com --ble
+PAUSA = 0.15
+robo = None
 
-# posição no solver -> motor (cor) da face
-MOTOR = {'F': 'R', 'R': 'G', 'B': 'O', 'L': 'B'}   # R=vermelha G=verde O=laranja B=azul
-# motor -> número da garra (igual ao seu sketch)
+MOTOR = {'F': 'R', 'R': 'G', 'B': 'O', 'L': 'B'}
 GARRA = {'R': '1', 'O': '2', 'B': '3', 'G': '4'}
-
-# Convenção do giro: 9 = neutro (90°), 1 = 180° (horário), 0 = 0° (anti-horário)
 NEUTRO, HORARIO, ANTI = '9', '1', '0'
 
 
@@ -494,7 +520,7 @@ def launch_cube(solution):
 
         if face in MOTOR:
             girar_face(MOTOR[face], anti, duplo)
-        else:  # U ou D
+        else:
             tombar()
             girar_face('G' if face == 'U' else 'B', anti, duplo)
             tombar(volta=True)
@@ -508,8 +534,12 @@ def launch_cube(solution):
 parser = argparse.ArgumentParser()
 parser.add_argument("-c", "--calibrate", action='store_true', default=False,
                     required=False, help="Calibrate the colors.")
-parser.add_argument("--cam", default="0",
+parser.add_argument("--cam", default=DEFAULT_CAM_SOURCE if DEFAULT_CAM_SOURCE is not None else "0",
                     help="Índice da câmera (0, 1...) ou URL do celular, ex.: http://192.168.0.20:8080/video")
+parser.add_argument("--rotate", type=int, choices=[0, 90, 180, 270], default=0,
+                    help="Rotaciona o frame da câmera do celular (0, 90, 180 ou 270 graus).")
+parser.add_argument("--flip", action='store_true', default=False,
+                    help="Espelha horizontalmente o frame da câmera.")
 parser.add_argument("--ble", nargs="?", const="CuboRobo", default=None, metavar="NOME",
                     help="Envia os comandos ao ESP32 por BLE (nome anunciado, padrão CuboRobo).")
 parser.add_argument("--3d", dest="visual3d", action="store_true", default=False,
@@ -521,37 +551,32 @@ calibrate_colors = args.calibrate
 
 if __name__ == '__main__':
     colors = helpers.Colors()
-    cam_source = int(args.cam) if args.cam.isdigit() else args.cam
+    cam_source = int(args.cam) if str(args.cam).isdigit() else args.cam
 
     if calibrate_colors:
-        if cam_source != 0:
-            print("AVISO: o calibrate.py abre a câmera 0 por conta própria; "
-                  "para calibrar com o celular altere a linha cv2.VideoCapture(0) dele.")
-        calibrate.run(colors)
+        calibrate.run(colors, cam_source, args.rotate, args.flip)
 
     faces = {
-        'white': Face('white', colors),
-        'orange': Face('orange', colors),
-        'yellow': Face('yellow', colors),
-        'red': Face('red', colors),
-        'blue': Face('blue', colors),
-        'green': Face('green', colors),
+        'white': Face('white', colors, cam_rotate=args.rotate, cam_flip=args.flip),
+        'orange': Face('orange', colors, cam_rotate=args.rotate, cam_flip=args.flip),
+        'yellow': Face('yellow', colors, cam_rotate=args.rotate, cam_flip=args.flip),
+        'red': Face('red', colors, cam_rotate=args.rotate, cam_flip=args.flip),
+        'blue': Face('blue', colors, cam_rotate=args.rotate, cam_flip=args.flip),
+        'green': Face('green', colors, cam_rotate=args.rotate, cam_flip=args.flip),
     }
 
     faces_list = ["white", "orange", "yellow", "red", "blue", "green"]
     idx = 0
 
-    cap = cv2.VideoCapture(cam_source)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)     # ignorado em stream de rede
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    warmup_camera(cap, num_frames=30, delay=0.05)
+    cap = abrir_camera(cam_source)
+    warmup_camera(cap, num_frames=30, delay=0.05, rotate=args.rotate, flip=args.flip)
 
     while not all_scanned(faces):
         key = faces_list[idx]
         redo = faces[key].scan(cap, key)
         if redo and idx - 1 >= 0:
             last_key = faces_list[idx - 1]
-            faces[last_key] = Face(last_key, colors)
+            faces[last_key] = Face(last_key, colors, cam_rotate=args.rotate, cam_flip=args.flip)
             idx -= 1
         elif not redo:
             idx += 1
@@ -564,6 +589,7 @@ if __name__ == '__main__':
 
     if raw_solution is None:
         print("\n[ERRO DE LEITURA] O cubo não pôde ser resolvido (detalhes acima).")
+        print("Dica: boa iluminação, sem reflexo, e escaneie as 6 faces novamente.")
         sys.exit(1)
 
     print("Solução calculada com sucesso:", raw_solution)
@@ -571,7 +597,6 @@ if __name__ == '__main__':
 
     if args.visual3d:
         from PyCube import PyCube
-        # o PyCube não entende 'F2': expande para dois movimentos
         PyCube().run([x for m in movimentos for x in ([m[0], m[0]] if m.endswith('2') else [m])])
     else:
         if args.ble:
