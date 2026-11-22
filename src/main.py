@@ -2,6 +2,8 @@ import sys
 import cv2
 import time
 import argparse
+import itertools
+from collections import Counter, deque
 from predict import predicted_color
 import numpy as np
 from draw import draw_2d_cube_state
@@ -10,17 +12,60 @@ import twophase.solver as sv
 import calibrate
 
 
-def sample(img, cx, cy, r=6):
-    """Mediana de um pequeno bloco em volta do centro do adesivo (menos ruído que 1 pixel)."""
-    h, w = img.shape[:2]
-    y0, y1 = max(int(cy) - r, 0), min(int(cy) + r, h)
-    x0, x1 = max(int(cx) - r, 0), min(int(cx) + r, w)
-    patch = img[y0:y1, x0:x1]
-    return np.median(patch.reshape(-1, 3), axis=0)
+# ---------------------------------------------------------------------------
+# Câmera
+# ---------------------------------------------------------------------------
 
+def get_average_bgr(frame, cx, cy, radius=3):
+    """Calcula a média BGR de uma janela (2*radius+1)x(2*radius+1) ao redor de (cx, cy)."""
+    h, w, _ = frame.shape
+    cx, cy = int(cx), int(cy)
+    x1 = max(0, cx - radius)
+    x2 = min(w, cx + radius + 1)
+    y1 = max(0, cy - radius)
+    y2 = min(h, cy + radius + 1)
+    region = frame[y1:y2, x1:x2]
+    return np.mean(region, axis=(0, 1))
+
+
+def warmup_camera(cap, num_frames=30, delay=0.05):
+    """Descarta frames iniciais para a câmera estabilizar exposição e brilho."""
+    for _ in range(num_frames):
+        cap.read()
+        if delay > 0:
+            time.sleep(delay)
+
+
+def ajustar_frame(frame):
+    """Leva qualquer resolução para ~640x480 (altura 480, corta as laterais se for mais largo).
+    O filtro de tamanho dos adesivos em find_contours (30 a 60 px) foi feito para 640x480."""
+    h, w = frame.shape[:2]
+    if h == 480 and w == 640:
+        return frame
+    escala = 480.0 / h
+    frame = cv2.resize(frame, (int(w * escala), 480))
+    if frame.shape[1] > 640:
+        x0 = (frame.shape[1] - 640) // 2
+        frame = frame[:, x0:x0 + 640]
+    return frame
+
+
+def ler_frame(cap, tentativas=100):
+    """Lê um frame; em stream de rede (celular) uma leitura pode falhar de vez em quando."""
+    for _ in range(tentativas):
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            return ajustar_frame(frame)
+        time.sleep(0.02)
+    raise RuntimeError("Não consegui ler a câmera. Confira o índice ou a URL (--cam).")
+
+
+# ---------------------------------------------------------------------------
+# Leitura das faces
+# ---------------------------------------------------------------------------
 
 class Face:
-    def __init__(self, name, class_colors):
+    def __init__(self, name, class_colors, history_size=7, min_votes=5):
         self.class_colors = class_colors
         self.face = [[None, None, None],
                      [None, None, None],
@@ -28,35 +73,42 @@ class Face:
         self.name = name
         self.scanned = False
 
-        self.rotations = {"white": {"white": "", "yellow": "left-2", "blue": "up-1", "green": "down-1", "orange": "left-1", "red": "right-1"},
-                          "yellow": {"white": "left-2", "yellow": "", "blue": "left-2", "green": "left-2", "orange": "left-3", "red": "left-1"},
-                          "blue": {"white": "up-1", "yellow": "up-1", "blue": "", "green": "down-2", "orange": "up-1", "red": "up-1"},
-                          "green": {"white": "up-1", "yellow": "up-1", "blue": "up-2", "green": "", "orange": "up-1", "red": "up-1"},
-                          "orange": {"white": "left-1", "yellow": "left-1", "blue": "right-1", "green": "right-1", "orange": "", "red": "right-2"},
-                          "red": {"white": "left-1", "yellow": "right-1", "blue": "left-1", "green": "left-1", "orange": "left-2", "red": ""}
-                          }
+        self.history_size = history_size
+        self.min_votes = min_votes
+        self.samples = [deque(maxlen=self.history_size) for _ in range(9)]
 
-        self.colors = {"White": (255, 255, 255), "Yellow": (0, 255, 255), "Orange": (0, 165, 255), "Red": (0, 0, 255), "Green": (0, 255, 0), "Blue": (255, 0, 0)}
+        self.rotations = {
+            "white": {"white": "", "yellow": "left-2", "blue": "up-1", "green": "down-1", "orange": "left-1", "red": "right-1"},
+            "yellow": {"white": "left-2", "yellow": "", "blue": "left-2", "green": "left-2", "orange": "left-3", "red": "left-1"},
+            "blue": {"white": "up-1", "yellow": "up-1", "blue": "", "green": "down-2", "orange": "up-1", "red": "up-1"},
+            "green": {"white": "up-1", "yellow": "up-1", "blue": "up-2", "green": "", "orange": "up-1", "red": "up-1"},
+            "orange": {"white": "left-1", "yellow": "left-1", "blue": "right-1", "green": "right-1", "orange": "", "red": "right-2"},
+            "red": {"white": "left-1", "yellow": "right-1", "blue": "left-1", "green": "left-1", "orange": "left-2", "red": ""}
+        }
+
+        self.colors = {
+            "White": (255, 255, 255),
+            "Yellow": (0, 255, 255),
+            "Orange": (0, 165, 255),
+            "Red": (0, 0, 255),
+            "Green": (0, 255, 0),
+            "Blue": (255, 0, 0)
+        }
 
     def find_contours(self, dilatedFrame):
         contours, hierarchy = cv2.findContours(dilatedFrame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         final_contours = []
-        # Filter contours to find squares
         for contour in contours:
             perimeter = cv2.arcLength(contour, True)
             approx = cv2.approxPolyDP(contour, 0.1 * perimeter, True)
             if len(approx) == 4:
                 area = cv2.contourArea(contour)
                 (x, y, w, h) = cv2.boundingRect(approx)
-                # Find aspect ratio of the shape
                 ratio = w / float(h)
-                # Check if contour is close to a square
                 if ratio >= 0.8 and ratio <= 1.2 and w >= 30 and w <= 60 and area / (w * h) > 0.4:
                     final_contours.append((x, y, w, h))
-        # exit early if there aren't enough contours
         if len(final_contours) < 9:
             return final_contours
-        # Find the contour that has 9 neighbors
         found = False
         contour_neighbors = {}
         for index, contour in enumerate(final_contours):
@@ -66,15 +118,15 @@ class Face:
             center_y = y + h / 2
             radius = 1.5
             neighbor_positions = [
-                [(center_x - w * radius), (center_y - h * radius)],  # top left
-                [center_x, (center_y - h * radius)],                 # top middle
-                [(center_x + w * radius), (center_y - h * radius)],  # top right
-                [(center_x - w * radius), center_y],                 # middle left
-                [center_x, center_y],                                # center
-                [(center_x + w * radius), center_y],                 # middle right
-                [(center_x - w * radius), (center_y + h * radius)],  # bottom left
-                [center_x, (center_y + h * radius)],                 # bottom middle
-                [(center_x + w * radius), (center_y + h * radius)],  # bottom right
+                [(center_x - w * radius), (center_y - h * radius)],
+                [center_x, (center_y - h * radius)],
+                [(center_x + w * radius), (center_y - h * radius)],
+                [(center_x - w * radius), center_y],
+                [center_x, center_y],
+                [(center_x + w * radius), center_y],
+                [(center_x - w * radius), (center_y + h * radius)],
+                [center_x, (center_y + h * radius)],
+                [(center_x + w * radius), (center_y + h * radius)],
             ]
             for neighbor in final_contours:
                 (x2, y2, w2, h2) = neighbor
@@ -88,9 +140,7 @@ class Face:
                 break
         if not found:
             return []
-        # Sort all the contours on their X and Y
         y_sorted = sorted(final_contours, key=lambda item: item[1])
-        # Split into 3 rows and sort each row on the x-value.
         top_row = sorted(y_sorted[0:3], key=lambda item: item[0])
         middle_row = sorted(y_sorted[3:6], key=lambda item: item[0])
         bottom_row = sorted(y_sorted[6:9], key=lambda item: item[0])
@@ -98,7 +148,6 @@ class Face:
         return sorted_contours
 
     def draw_contours(self, frame, contours):
-        """Draw contours onto the given frame."""
         for index, (x, y, w, h) in enumerate(contours):
             cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 255), 2)
         return frame
@@ -123,35 +172,38 @@ class Face:
             end_point = (int(center_x + 2 * w), int(center_y))
         return start_point, end_point, times
 
+    def _stabilized_color(self, idx, prediction):
+        self.samples[idx].append(prediction)
+        if len(self.samples[idx]) < self.min_votes:
+            return None
+
+        most_common_color, votes = Counter(self.samples[idx]).most_common(1)[0]
+        if votes >= self.min_votes:
+            return most_common_color
+        return None
+
     def scan(self, cap, wanted_color):
         while True:
-
-            # read frame
-            ret, frame = cap.read()
+            frame = ler_frame(cap)
             raw = frame.copy()   # cópia limpa (sem desenhos) usada para ler as cores
 
-            # process frame
             grayFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             blurredFrame = cv2.blur(grayFrame, (3, 3))
             cannyFrame = cv2.Canny(blurredFrame, 30, 60, 3)
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
             dilatedFrame = cv2.dilate(cannyFrame, kernel)
 
-            # find contours and draw them
             contours = self.find_contours(dilatedFrame)
             frame = self.draw_contours(frame, contours)
 
-            # write wanted color on frame bottom left
             cv2.putText(frame, f"Show the {wanted_color} face", (10, 470), cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.colors[wanted_color.capitalize()], 2, cv2.LINE_AA)
             if len(contours) == 9:
                 middle = contours[4]
-                x = middle[0]
-                y = middle[1]
-                w = middle[2]
-                h = middle[3]
+                x, y, w, h = middle[0], middle[1], middle[2], middle[3]
                 center_x = x + w / 2
                 center_y = y + h / 2
-                color = sample(raw, center_x, center_y)
+
+                color = get_average_bgr(raw, center_x, center_y, radius=3)
                 middle_color = predicted_color(color, self.class_colors)
 
                 start_point, end_point, times = self.get_arrow(x, y, w, h, center_x, center_y, middle_color, wanted_color)
@@ -159,26 +211,27 @@ class Face:
 
                 if middle_color == wanted_color:
                     for idx, i in enumerate(contours):
-                        x = i[0]
-                        y = i[1]
-                        w = i[2]
-                        h = i[3]
+                        x, y, w, h = i[0], i[1], i[2], i[3]
                         center_x = x + w / 2
                         center_y = y + h / 2
-                        # cor do adesivo (mediana de um bloco, na imagem limpa)
-                        color = sample(raw, center_x, center_y)
+
+                        color = get_average_bgr(raw, center_x, center_y, radius=3)
                         prediction = predicted_color(color, self.class_colors)
-                        self.update(idx, prediction)
-                        # write the color name on the contour
-                        cv2.putText(frame, prediction, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                        stable_color = self._stabilized_color(idx, prediction)
+
+                        display_label = stable_color if stable_color is not None else f"{prediction}?"
+                        if stable_color is not None:
+                            self.update(idx, stable_color)
+
+                        cv2.putText(frame, display_label, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
                         cv2.circle(frame, (int(center_x), int(center_y)), 5, (0, 0, 0), -1)
                 else:
                     cv2.putText(frame, 'Not the correct color', (400, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
             image = draw_2d_cube_state(frame, faces)
             cv2.imshow('frame', image)
             key_pressed = cv2.waitKey(1) & 0xFF
             if key_pressed == 27 or key_pressed == ord('q'):
-                print("Exiting...")
                 sys.exit()
             elif key_pressed == 8 or key_pressed == 127:
                 return True
@@ -194,6 +247,8 @@ class Face:
 
         if None not in self.face[0] and None not in self.face[1] and None not in self.face[2]:
             self.scanned = True
+            # Orientação "de fábrica". O solver_cubo abaixo ainda testa as outras rotações
+            # automaticamente se esta não produzir um cubo válido.
             if self.name == 'white':
                 self.face = np.rot90(self.face, 3)
             elif self.name == 'orange':
@@ -206,7 +261,6 @@ class Face:
                 self.face = np.rot90(self.face, 2)
             elif self.name == 'green':
                 self.face = np.rot90(self.face, 0)
-            print('Face {} scanned!'.format(self.name))
 
     def flatten(self):
         return [color for row in self.face for color in row]
@@ -221,7 +275,147 @@ def all_scanned(faces):
 
 
 # ---------------------------------------------------------------------------
-# Solução -> comandos do Arduino (simulação por serial/terminal)
+# String do cubo (Kociemba) + verificação das peças
+# ---------------------------------------------------------------------------
+# O twophase espera 54 letras na ordem das faces U R F D L B.
+# ATENÇÃO: a lista abaixo é zipada com "URFDLB", então as faces OPOSTAS têm que ficar
+# em pares: U/D = amarelo/branco, R/L = verde/azul, F/B = vermelho/laranja.
+# (Uma ordem como yellow, blue, red, green, orange, white coloca amarelo oposto ao verde,
+#  o que não existe num cubo real e gera "Some edges are undefined" sempre.)
+# Esquema padrão: amarelo em cima, vermelho na frente => verde à direita.
+
+ORDEM = ['yellow', 'green', 'red', 'white', 'blue', 'orange']     # U R F D L B
+LETRA = dict(zip(ORDEM, "URFDLB"))
+FACES_K = "URFDLB"
+
+
+def _pos_facelet(face, i, j):
+    """Posição 3D (peça) e normal do adesivo (linha i, coluna j) de uma face, vista de fora."""
+    if face == 'U': return (j - 1, 1, i - 1), (0, 1, 0)       # topo da imagem = trás
+    if face == 'R': return (1, 1 - i, 1 - j), (1, 0, 0)
+    if face == 'F': return (j - 1, 1 - i, 1), (0, 0, 1)
+    if face == 'D': return (j - 1, -1, 1 - i), (0, -1, 0)
+    if face == 'L': return (-1, 1 - i, j - 1), (-1, 0, 0)
+    if face == 'B': return (1 - j, 1 - i, -1), (0, 0, -1)
+
+
+_FACELETS = [_pos_facelet(f, i, j) for f in FACES_K for i in range(3) for j in range(3)]
+
+
+def _agrupar_pecas():
+    d = {}
+    for idx, (pos, _) in enumerate(_FACELETS):
+        d.setdefault(pos, []).append(idx)
+    return [v for v in d.values() if len(v) >= 2]
+
+
+_PECAS = _agrupar_pecas()
+_ARESTAS = [p for p in _PECAS if len(p) == 2]
+_CANTOS = [p for p in _PECAS if len(p) == 3]
+_RESOLVIDO = "".join(f * 9 for f in FACES_K)
+_ARESTAS_OK = {frozenset(_RESOLVIDO[i] for i in p) for p in _ARESTAS}
+_CANTOS_OK = {frozenset(_RESOLVIDO[i] for i in p) for p in _CANTOS}
+
+
+def problemas(s):
+    """Descreve o que há de impossível na string (lista vazia = todas as peças existem)."""
+    if len(s) != 54:
+        return [f"tamanho {len(s)} (deveria ser 54)"]
+    out = []
+    for l in FACES_K:
+        if s.count(l) != 9:
+            out.append(f"letra {l} aparece {s.count(l)}x (deveria ser 9)")
+    vistas = set()
+    for tipo, pecas, validas in (("aresta", _ARESTAS, _ARESTAS_OK),
+                                 ("canto", _CANTOS, _CANTOS_OK)):
+        for p in pecas:
+            cores = frozenset(s[i] for i in p)
+            nome = "-".join(s[i] for i in p)
+            onde = ", ".join(f"{FACES_K[i // 9]}{i % 9 + 1}" for i in p)
+            if cores not in validas:
+                out.append(f"{tipo} inexistente {nome} (adesivos {onde})")
+            elif len(cores) == len(p):
+                if (tipo, cores) in vistas:
+                    out.append(f"{tipo} repetida {nome} (adesivos {onde})")
+                vistas.add((tipo, cores))
+    return out
+
+
+def _girar9(face9, k):
+    """Gira uma face (lista de 9) k quartos de volta no sentido horário."""
+    g = [face9[0:3], face9[3:6], face9[6:9]]
+    for _ in range(k % 4):
+        g = [list(r) for r in zip(*g[::-1])]
+    return [c for r in g for c in r]
+
+
+def candidatos_rotacao(blocos):
+    """Todas as combinações de rotação das 6 faces que dão um cubo com peças válidas,
+    das que mexem em menos faces para as que mexem em mais."""
+    achados = []
+    for ks in itertools.product(range(4), repeat=6):
+        s = "".join("".join(_girar9(blocos[f], ks[f])) for f in range(6))
+        if not problemas(s):
+            achados.append((ks, s))
+    achados.sort(key=lambda c: sum(1 for k in c[0] if k))
+    return achados
+
+
+def blocos_das_faces(faces):
+    """6 blocos de 9 letras (U R F D L B). Cada adesivo vira a letra da face cujo centro tem a cor dele."""
+    blocos = []
+    for nome in ORDEM:
+        centro = faces[nome].face[1][1]
+        if centro != nome:
+            print(f"[AVISO] o centro da face {nome} foi lido como '{centro}'. Recalibre as cores.")
+        blocos.append([LETRA[c] for c in faces[nome].flatten()])
+    return blocos
+
+
+def resolver_cubo(faces, max_len=24, timeout=5):
+    """Monta a string, confere as peças, corrige orientação de face se preciso e chama o Kociemba.
+    Devolve a string da solução (ex.: 'R1 U3 F2 (3f)') ou None."""
+    blocos = blocos_das_faces(faces)
+    original = "".join("".join(b) for b in blocos)
+
+    print("\ncube_string:", original)
+    for f in blocos:
+        print("  ", "".join(f[0:3]), "".join(f[3:6]), "".join(f[6:9]))
+    for l in FACES_K:
+        print(f"  {l}: {original.count(l)}", end="")
+    print()
+
+    ps = problemas(original)
+    if ps:
+        print("\nProblemas na leitura:")
+        for p in ps:
+            print("  -", p)
+
+    cands = candidatos_rotacao(blocos)
+    if not cands:
+        print("\nNenhuma rotação de face deixa o cubo válido: há adesivo com COR classificada errada "
+              "(veja as peças acima). Melhore a luz, recalibre (-c) e escaneie de novo.")
+        return None
+    if len(cands) > 1:
+        print(f"\n[AVISO] {len(cands)} combinações de rotação são válidas; testando em ordem.")
+
+    for ks, s in cands[:20]:
+        res = sv.solve(s, max_len, timeout)
+        if isinstance(res, str) and res.startswith("Error"):
+            print("  solver rejeitou:", res)
+            continue
+        if any(ks):
+            ajustes = {FACES_K[i]: ks[i] for i in range(6) if ks[i]}
+            print(f"\n[CORRIGIDO] faces giradas (quartos de volta horários): {ajustes}")
+            print("Para não precisar disso, some esses giros ao np.rot90 da face em Face.update.")
+        return res
+    print("\nO solver rejeitou todas as combinações válidas (torção/paridade): provável adesivo trocado "
+          "entre duas cores parecidas.")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Solução -> comandos do robô (simulação no terminal ou BLE com o ESP32)
 # ---------------------------------------------------------------------------
 
 def parse_solution(sol):
@@ -233,8 +427,8 @@ def parse_solution(sol):
     return out
 
 
-MODO_SIMULACAO = True    # mude para False quando tiver o Arduino
-PAUSA = 0.15             # pausa entre comandos, só para acompanhar a leitura
+PAUSA = 0.15             # pausa entre comandos só na simulação (sem robô)
+robo = None              # vira um BLERobo quando você roda com --ble
 
 # posição no solver -> motor (cor) da face
 MOTOR = {'F': 'R', 'R': 'G', 'B': 'O', 'L': 'B'}   # R=vermelha G=verde O=laranja B=azul
@@ -246,9 +440,12 @@ NEUTRO, HORARIO, ANTI = '9', '1', '0'
 
 
 def enviar(cmd, comentario=""):
-    """Hoje só imprime. Depois troque por: ser.write((cmd + "\n").encode())"""
+    """Sem --ble só imprime; com --ble manda ao ESP32 e espera o 'OK' dele."""
     print(f"  >> {cmd:<3} {comentario}")
-    time.sleep(PAUSA)
+    if robo is not None:
+        robo.enviar(cmd)
+    else:
+        time.sleep(PAUSA)
 
 
 def girar_face(m, anti=False, duplo=False):
@@ -286,7 +483,8 @@ def tombar(volta=False):
 
 
 def launch_cube(solution):
-    print(f"\n=== SIMULAÇÃO SERIAL ({len(solution)} movimentos) ===")
+    modo = "BLE" if robo is not None else "SIMULAÇÃO"
+    print(f"\n=== {modo} ({len(solution)} movimentos) ===")
     print(solution)
     for i, passo in enumerate(solution, 1):
         face = passo[0]
@@ -300,17 +498,22 @@ def launch_cube(solution):
             tombar()
             girar_face('G' if face == 'U' else 'B', anti, duplo)
             tombar(volta=True)
-    print("\n=== FIM DA SIMULAÇÃO ===")
+    print(f"\n=== FIM ({modo}) ===")
 
 
 # ---------------------------------------------------------------------------
 # Programa principal
 # ---------------------------------------------------------------------------
 
-# Define command-line arguments
 parser = argparse.ArgumentParser()
 parser.add_argument("-c", "--calibrate", action='store_true', default=False,
                     required=False, help="Calibrate the colors.")
+parser.add_argument("--cam", default="0",
+                    help="Índice da câmera (0, 1...) ou URL do celular, ex.: http://192.168.0.20:8080/video")
+parser.add_argument("--ble", nargs="?", const="CuboRobo", default=None, metavar="NOME",
+                    help="Envia os comandos ao ESP32 por BLE (nome anunciado, padrão CuboRobo).")
+parser.add_argument("--3d", dest="visual3d", action="store_true", default=False,
+                    help="Mostra a solução no visualizador 3D (PyCube) em vez de executar o robô.")
 args = parser.parse_args()
 
 calibrate_colors = args.calibrate
@@ -318,7 +521,12 @@ calibrate_colors = args.calibrate
 
 if __name__ == '__main__':
     colors = helpers.Colors()
+    cam_source = int(args.cam) if args.cam.isdigit() else args.cam
+
     if calibrate_colors:
+        if cam_source != 0:
+            print("AVISO: o calibrate.py abre a câmera 0 por conta própria; "
+                  "para calibrar com o celular altere a linha cv2.VideoCapture(0) dele.")
         calibrate.run(colors)
 
     faces = {
@@ -333,11 +541,10 @@ if __name__ == '__main__':
     faces_list = ["white", "orange", "yellow", "red", "blue", "green"]
     idx = 0
 
-    # open camera
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap = cv2.VideoCapture(cam_source)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)     # ignorado em stream de rede
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    time.sleep(0.5)
+    warmup_camera(cap, num_frames=30, delay=0.05)
 
     while not all_scanned(faces):
         key = faces_list[idx]
@@ -352,24 +559,26 @@ if __name__ == '__main__':
     cap.release()
     cv2.destroyAllWindows()
 
-    # Formato do twophase (Kociemba): 54 letras na ordem U R F D L B
-    ORDER = ['yellow', 'green', 'red', 'white', 'blue', 'orange']   # U R F D L B
-    LETTER = {'yellow': 'U', 'green': 'R', 'red': 'F',
-              'white': 'D', 'blue': 'L', 'orange': 'B'}
+    print("Resolvendo o cubo...")
+    raw_solution = resolver_cubo(faces)
 
-    cube_string = "".join(LETTER[c] for name in ORDER for c in faces[name].flatten())
-    print("cube_string:", cube_string)
+    if raw_solution is None:
+        print("\n[ERRO DE LEITURA] O cubo não pôde ser resolvido (detalhes acima).")
+        sys.exit(1)
 
-    # diagnóstico antes de chamar o solver
-    for l in "URFDLB":
-        print(l, cube_string.count(l))      # todos devem ser 9
-    print("centros:", [cube_string[i] for i in (4, 13, 22, 31, 40, 49)])  # deve ser U R F D L B
+    print("Solução calculada com sucesso:", raw_solution)
+    movimentos = parse_solution(raw_solution)
 
-    print("Solving the cube...")
-    raw_solution = sv.solve(cube_string, 24, 5)
-    print("Retorno do solver:", raw_solution)
-
-    if raw_solution.startswith("Error"):
-        print("O solver rejeitou o cubo. Veja o número do erro e a cube_string acima.")
+    if args.visual3d:
+        from PyCube import PyCube
+        # o PyCube não entende 'F2': expande para dois movimentos
+        PyCube().run([x for m in movimentos for x in ([m[0], m[0]] if m.endswith('2') else [m])])
     else:
-        launch_cube(parse_solution(raw_solution))
+        if args.ble:
+            from ble_robo import BLERobo
+            robo = BLERobo(args.ble)
+        try:
+            launch_cube(movimentos)
+        finally:
+            if robo is not None:
+                robo.fechar()
