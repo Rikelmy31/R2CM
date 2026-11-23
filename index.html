@@ -1,0 +1,1010 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0e1115">
+<title>Cubo Robô</title>
+<style>
+  :root {
+    --bg:#f3f4f6; --card:#ffffff; --ink:#15181d; --muted:#5d6672; --line:#dde1e6;
+    --btn:#eceff2; --btn-hi:#e2e6ea; --accent:#2f6fe4; --ok:#1c9a55; --bad:#d6342b; --warn:#b7791f;
+    --r:#d6342b; --o:#ee8a1f; --b:#2f6fe4; --g:#2a9d58;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0e1115; --card:#171b21; --ink:#eceff3; --muted:#98a2af; --line:#262c35;
+      --btn:#222831; --btn-hi:#2b323d; --accent:#5b93ff; --ok:#3ccf7e; --bad:#ff6b61; --warn:#e3b04b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 0 16px 48px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -.01em; }
+  h2 { font-size: 13px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .92em; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+  .dica { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+
+  /* barra de status fixa */
+  .barra-status { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 12px 0 10px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .barra-status .linha1 { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; padding: 5px 10px; border-radius: 99px; background: var(--card); border: 1px solid var(--line); color: var(--muted); }
+  .pill i { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .pill[data-s="ok"] { color: var(--ink); } .pill[data-s="ok"] i { background: var(--ok); }
+  .pill[data-s="busy"] { color: var(--ink); } .pill[data-s="busy"] i { background: var(--accent); animation: pulso 1s ease-in-out infinite; }
+  .pill[data-s="warn"] { color: var(--ink); } .pill[data-s="warn"] i { background: var(--warn); }
+  .pill[data-s="bad"] { color: var(--ink); } .pill[data-s="bad"] i { background: var(--bad); }
+  @keyframes pulso { 50% { opacity: .35; } }
+
+  button { font: inherit; color: var(--ink); background: var(--btn); border: 1px solid transparent; border-radius: 10px; min-height: 46px; padding: 0 14px; cursor: pointer; touch-action: manipulation; }
+  button:hover:not(:disabled) { background: var(--btn-hi); }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+  button.stop { background: var(--bad); color: #fff; font-weight: 700; }
+  button.stop:hover:not(:disabled) { background: var(--bad); filter: brightness(1.08); }
+  button.on { background: color-mix(in srgb, var(--c, var(--accent)) 22%, var(--card)); border-color: var(--c, var(--accent)); font-weight: 600; }
+  select, input[type="text"] { font: inherit; min-height: 46px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); padding: 0 12px; }
+
+  .aviso { border-left: 4px solid var(--warn); padding: 10px 12px; background: color-mix(in srgb, var(--warn) 12%, var(--card)); border-radius: 8px; font-size: 14px; margin: 12px 0 0; }
+  .aviso[hidden] { display: none; }
+  .aviso.ok { border-left-color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--card)); }
+  .aviso.erro { border-left-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--card)); }
+
+  .conectar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+  .conectar .btns, .acoes { display: flex; gap: 8px; flex-wrap: wrap; }
+  .acoes { margin-top: 12px; }
+  .acoes > * { flex: 1 1 140px; }
+
+  /* câmera */
+  .visor { position: relative; background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 4 / 3; }
+  .visor canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
+  .visor .msg { position: absolute; inset: 0; display: grid; place-items: center; color: #cbd2da; font-size: 14px; text-align: center; padding: 16px; }
+  .visor .msg[hidden] { display: none; }
+  #video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .cam-ctl { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center; }
+  .cam-ctl > button { flex: 1 1 130px; }
+  .cam-ctl select { flex: 2 1 180px; min-width: 0; }
+  .slider { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 14px; color: var(--muted); }
+  .slider input { flex: 1; }
+  .slider label.chk { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .instrucao { margin: 12px 0 0; padding: 12px; border-radius: 10px; background: var(--btn); font-size: 15px; }
+  .instrucao b { font-weight: 700; }
+
+  .rede { display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(3, auto); gap: 8px; margin-top: 14px; max-width: 420px; }
+  .mini { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 3px; border: 2px solid var(--line); border-radius: 6px; background: var(--card); cursor: pointer; aspect-ratio: 1; position: relative; }
+  .mini.alvo { border-color: var(--accent); }
+  .mini.feita { border-color: var(--ok); }
+  .mini span { border-radius: 2px; background: var(--btn); }
+  .mini small { position: absolute; left: 3px; bottom: -1px; font-size: 10px; color: var(--muted); display: none; }
+
+  .paleta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+  @media (min-width: 560px) { .paleta { grid-template-columns: repeat(6, 1fr); } }
+  .chip { border: 1px solid var(--line); border-radius: 10px; padding: 8px; text-align: center; font-size: 12px; background: var(--card); }
+  .chip .sw { height: 26px; border-radius: 6px; margin-bottom: 6px; border: 1px solid rgba(128,128,128,.35); }
+  .chip button { min-height: 34px; width: 100%; font-size: 13px; padding: 0 4px; }
+  details > summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-top: 14px; }
+
+  .resultado { margin-top: 14px; }
+  .resultado[hidden] { display: none; }
+  #cubeStr { font: 15px/1.6 ui-monospace, Menlo, Consolas, monospace; word-break: break-all; background: var(--btn); padding: 10px 12px; border-radius: 10px; margin: 8px 0; letter-spacing: .04em; }
+  .resultado ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
+
+  /* robô */
+  .faces { display: grid; gap: 12px; grid-template-columns: 1fr; }
+  @media (min-width: 560px) { .faces { grid-template-columns: 1fr 1fr; } }
+  .face { border: 1px solid var(--line); border-radius: 12px; padding: 12px; border-top: 4px solid var(--c); }
+  .face header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+  .face h3 { margin: 0; font-size: 16px; }
+  .face small { color: var(--muted); font-size: 13px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .row .lab { width: 44px; font-size: 13px; color: var(--muted); flex: none; }
+  .row button { flex: 1; padding: 0 6px; }
+  .movs { display: grid; gap: 8px; }
+  .movs .linha { display: grid; grid-template-columns: 28px 1fr 1fr 1fr; gap: 8px; align-items: center; }
+  .movs .linha b { text-align: center; font-size: 18px; }
+  .seq { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .seq input { flex: 1 1 220px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .progresso { margin-top: 14px; }
+  .progresso[hidden] { display: none; }
+  .barra { height: 8px; background: var(--btn); border-radius: 99px; overflow: hidden; }
+  .barra > div { height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  .progresso p { margin: 6px 0 0; font-size: 14px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  #log { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+  #log li { padding: 2px 0; border-bottom: 1px dashed var(--line); }
+  #log li.erro { color: var(--bad); }
+  #log li.ok { color: var(--ok); }
+  #log time { color: var(--muted); margin-right: 8px; }
+  footer { color: var(--muted); font-size: 13px; text-align: center; margin-top: 20px; }
+</style>
+</head>
+<body data-estado="off">
+<main>
+  <div class="barra-status">
+    <div class="linha1"><h1>Cubo Robô</h1></div>
+    <div class="pills">
+      <span class="pill" id="pillBle" data-s="off"><i></i><span>Bluetooth: desconectado</span></span>
+      <span class="pill" id="pillCam" data-s="off"><i></i><span>Câmera: desligada</span></span>
+      <span class="pill" id="pillLeitura" data-s="off"><i></i><span>Leitura: 0/6 faces</span></span>
+      <span class="pill" id="pillRobo" data-s="off"><i></i><span>Robô: parado</span></span>
+    </div>
+    <p class="aviso" id="avisoSuporte" hidden></p>
+  </div>
+
+  <!-- ===================== CONEXÃO ===================== -->
+  <section class="card" style="margin-top:14px">
+    <h2>Conexão com o ESP32</h2>
+    <div class="conectar">
+      <span id="devNome" class="dica" style="margin:0">Nenhum ESP32 conectado</span>
+      <div class="btns">
+        <button class="primary" id="btnConectar">Conectar ao ESP32</button>
+        <button id="btnDesconectar" hidden>Desconectar</button>
+      </div>
+    </div>
+    <p class="dica" id="ultimoCmd">Último comando: —</p>
+  </section>
+
+  <!-- ===================== CÂMERA / LEITURA ===================== -->
+  <section class="card">
+    <h2>Câmera e leitura do cubo</h2>
+    <div class="visor">
+      <canvas id="visor" width="640" height="480"></canvas>
+      <video id="video" playsinline muted></video>
+      <div class="msg" id="visorMsg">Câmera desligada.<br>Toque em “Ligar câmera”.</div>
+    </div>
+    <div class="cam-ctl">
+      <button class="primary" id="btnCam">Ligar câmera</button>
+      <select id="selCam" aria-label="Escolher câmera" hidden></select>
+      <button id="btnCapturar" disabled>Capturar face</button>
+    </div>
+    <div class="slider">
+      <span>Quadro</span>
+      <input type="range" id="tamQuadro" min="30" max="95" value="70" aria-label="Tamanho do quadro de leitura">
+      <label class="chk"><input type="checkbox" id="chkEspelho"> corrigir espelho</label>
+    </div>
+    <p class="instrucao" id="instrucao">Ligue a câmera para começar.</p>
+    <p class="aviso" id="avisoLeitura" hidden></p>
+
+    <div class="rede" id="rede" aria-label="Faces já lidas"></div>
+    <p class="dica">Toque numa face da planificação para lê-la de novo.</p>
+
+    <div class="resultado" id="resultado" hidden>
+      <h2 style="margin-top:18px">Cubo lido</h2>
+      <div id="cubeStr"></div>
+      <p class="aviso" id="avisoCubo"></p>
+      <ul id="detalhesCubo"></ul>
+      <div class="acoes">
+        <button id="btnCopiar">Copiar string</button>
+        <button id="btnLimpar">Limpar leitura</button>
+      </div>
+      <p class="dica">Resolva esta string no Kociemba (no PC, <code>sv.solve(string, 24, 5)</code>, ou num solver online) e cole a solução em “Movimentos do cubo”, mais abaixo.</p>
+    </div>
+
+    <details>
+      <summary>Cores (calibração)</summary>
+      <p class="dica">As cores de referência vêm da sua webcam. Para a câmera do celular, calibre: ponha um adesivo da cor no <b>quadrado central</b> do visor e toque na cor correspondente. Faça com a mesma luz com que vai ler o cubo.</p>
+      <div class="paleta" id="paleta"></div>
+      <div class="acoes"><button id="btnPaletaPadrao">Restaurar cores padrão</button></div>
+    </details>
+  </section>
+
+  <!-- ===================== ROBÔ ===================== -->
+  <section class="card">
+    <h2>Garras e giros</h2>
+    <div class="faces" id="faces"></div>
+    <div class="acoes">
+      <button class="ctl" data-macro="abrirTodas">Abrir todas as garras</button>
+      <button class="ctl" data-macro="fecharTodas">Fechar todas</button>
+      <button class="ctl" data-macro="neutro">Giros ao neutro (90°)</button>
+      <button class="ctl" data-macro="inicial">Posição inicial</button>
+    </div>
+    <p class="dica">Os servos não devolvem a posição: o destaque mostra o <b>último comando enviado</b>. Use “Posição inicial” para sincronizar (garras abertas, giros em 90°).</p>
+  </section>
+
+  <section class="card">
+    <h2>Movimentos do cubo</h2>
+    <div class="movs" id="movs"></div>
+    <div class="acoes">
+      <button class="ctl" data-macro="tombar">Tombar o cubo</button>
+      <button class="ctl" data-macro="desvirar">Desvirar o cubo</button>
+    </div>
+    <div class="seq">
+      <input id="seq" class="ctl" type="text" inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false"
+             placeholder="Sequência: R U R' U'  ou  R1 U3 F2 (3f)">
+      <button class="ctl primary" id="btnSeq">Executar</button>
+    </div>
+    <p class="dica">Aceita a saída do Kociemba (<code>R1 U3 F2</code>) ou a notação comum (<code>R U' F2</code>). U e D tombam o cubo, giram e desviram.</p>
+    <div class="progresso" id="progresso" hidden>
+      <div class="barra"><div id="barra"></div></div>
+      <p id="progTxt"></p>
+    </div>
+    <div class="acoes"><button class="stop" id="btnParar" disabled>PARAR</button></div>
+  </section>
+
+  <section class="card">
+    <h2>Comando livre</h2>
+    <div class="seq" style="margin-top:0">
+      <input id="livre" class="ctl" type="text" maxlength="2" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="Ex.: 1C, 3O, R9, G1">
+      <button class="ctl" id="btnLivre">Enviar</button>
+    </div>
+    <p class="dica">Garra: <code>1</code> a <code>4</code> + <code>O</code> (abre) ou <code>C</code> (fecha). Giro: <code>R</code>, <code>O</code>, <code>B</code> ou <code>G</code> + <code>0</code> (0°), <code>9</code> (90°) ou <code>1</code> (180°).</p>
+  </section>
+
+  <section class="card">
+    <h2>Registro</h2>
+    <ul id="log"></ul>
+  </section>
+
+  <footer>Bluetooth (BLE) e câmera exigem HTTPS e funcionam no Chrome/Edge (Android e computador).</footer>
+</main>
+
+<script>
+"use strict";
+
+// ===========================================================================
+// 1) BLUETOOTH -- protocolo igual ao sketch do ESP32: "XY\n" por escrita; o
+//    ESP32 responde "OK" por notificação quando o servo termina (Nordic UART).
+// ===========================================================================
+const SVC = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const RX  = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";   // página -> ESP32 (write)
+const TX  = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";   // ESP32 -> página (notify)
+const NOME_BLE = "CuboRobo";
+const TIMEOUT_OK = 8000;
+
+const FACES = [
+  { id: "R", nome: "Vermelha", garra: "1", cor: "var(--r)" },
+  { id: "O", nome: "Laranja",  garra: "2", cor: "var(--o)" },
+  { id: "B", nome: "Azul",     garra: "3", cor: "var(--b)" },
+  { id: "G", nome: "Verde",    garra: "4", cor: "var(--g)" },
+];
+
+// ===========================================================================
+// 2) MOVIMENTOS (portado do main.py)
+// ===========================================================================
+const MOTOR = { F: "R", R: "G", B: "O", L: "B" };   // face do solver -> motor (cor)
+const GARRA = { R: "1", O: "2", B: "3", G: "4" };   // motor -> garra
+const NEUTRO = "9", HORARIO = "1", ANTI = "0";
+
+function girarFace(m, anti = false, duplo = false) {
+  const g = GARRA[m], out = [];
+  if (duplo) out.push(m + ANTI, g + "C", m + HORARIO);
+  else out.push(g + "C", m + (anti ? ANTI : HORARIO));
+  out.push(g + "O", m + NEUTRO);
+  return out;
+}
+function tombar(volta = false) {
+  return ["1C", "2C", "3O", "4O", ...(volta ? ["R0", "O1"] : ["R1", "O0"]), "3C", "4C", "1O", "2O", "R9", "O9"];
+}
+function comandosDoMovimento(passo) {
+  const face = passo[0], duplo = passo.endsWith("2"), anti = passo.endsWith("'");
+  if (face in MOTOR) return girarFace(MOTOR[face], anti, duplo);
+  return [...tombar(false), ...girarFace(face === "U" ? "G" : "B", anti, duplo), ...tombar(true)];
+}
+// "R1 U3 F2 (3f)" ou "R U' F2" -> ["R", "U'", "F2"]
+function lerSequencia(texto) {
+  const limpo = texto.replace(/\([^)]*\)/g, " ").replace(/[’′`´]/g, "'").toUpperCase();
+  const out = [];
+  for (const tok of limpo.split(/[\s,;]+/).filter(Boolean)) {
+    const m = /^([URFDLB])(['23]|1)?$/.exec(tok);
+    if (!m) throw new Error(`Movimento inválido: "${tok}"`);
+    const [, f, s] = m;
+    out.push(s === "3" || s === "'" ? f + "'" : s === "2" ? f + "2" : f);
+  }
+  return out;
+}
+const MACROS = {
+  abrirTodas: () => ["1O", "2O", "3O", "4O"],
+  fecharTodas: () => ["1C", "2C", "3C", "4C"],
+  neutro: () => ["R9", "O9", "B9", "G9"],
+  inicial: () => ["1O", "2O", "3O", "4O", "R9", "O9", "B9", "G9"],
+  tombar: () => tombar(false),
+  desvirar: () => tombar(true),
+};
+
+// ===========================================================================
+// 3) COR: sRGB -> Lab e distância CIEDE2000 (portados do helpers.py)
+// ===========================================================================
+function rgb2lab([r, g, b]) {
+  const lin = v => { v /= 255; return (v > 0.04045 ? Math.pow((v + 0.055) / 1.055, 2.4) : v / 12.92) * 100; };
+  const R = lin(r), G = lin(g), B = lin(b);
+  let X = (R * 0.4124 + G * 0.3576 + B * 0.1805) / 95.047;
+  let Y = (R * 0.2126 + G * 0.7152 + B * 0.0722) / 100.0;
+  let Z = (R * 0.0193 + G * 0.1192 + B * 0.9505) / 108.883;
+  const f = v => (v > 0.008856 ? Math.pow(v, 1 / 3) : 7.787 * v + 16 / 116);
+  X = f(X); Y = f(Y); Z = f(Z);
+  return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)];
+}
+
+function ciede2000(lab1, lab2) {
+  const C_25_7 = 6103515625, pi = Math.PI;
+  const [L1, a1, b1] = lab1, [L2, a2, b2] = lab2;
+  const C1 = Math.hypot(a1, b1), C2 = Math.hypot(a2, b2);
+  let Cave = (C1 + C2) / 2;
+  const G = 0.5 * (1 - Math.sqrt(Math.pow(Cave, 7) / (Math.pow(Cave, 7) + C_25_7)));
+  const a1_ = (1 + G) * a1, a2_ = (1 + G) * a2;
+  const C1_ = Math.hypot(a1_, b1), C2_ = Math.hypot(a2_, b2);
+  const hue = (a, b) => (b === 0 && a === 0) ? 0 : (a >= 0 ? Math.atan2(b, a) : Math.atan2(b, a) + 2 * pi);
+  const h1_ = hue(a1_, b1), h2_ = hue(a2_, b2);
+  const dL_ = L2 - L1, dC_ = C2_ - C1_;
+  let dh_ = h2_ - h1_;
+  if (C1_ * C2_ === 0) dh_ = 0;
+  else if (dh_ > pi) dh_ -= 2 * pi;
+  else if (dh_ < -pi) dh_ += 2 * pi;
+  const dH_ = 2 * Math.sqrt(C1_ * C2_) * Math.sin(dh_ / 2);
+  const Lave = (L1 + L2) / 2;
+  Cave = (C1_ + C2_) / 2;
+  const _dh = Math.abs(h1_ - h2_), _sh = h1_ + h2_, C1C2 = C1_ * C2_;
+  let have;
+  if (_dh <= pi && C1C2 !== 0) have = (h1_ + h2_) / 2;
+  else if (_dh > pi && _sh < 2 * pi && C1C2 !== 0) have = (h1_ + h2_) / 2 + pi;
+  else if (_dh > pi && _sh >= 2 * pi && C1C2 !== 0) have = (h1_ + h2_) / 2 - pi;
+  else have = h1_ + h2_;
+  const T = 1 - 0.17 * Math.cos(have - pi / 6) + 0.24 * Math.cos(2 * have) + 0.32 * Math.cos(3 * have + pi / 30) - 0.2 * Math.cos(4 * have - 63 * pi / 180);
+  let hdeg = have * 180 / pi;
+  if (hdeg < 0) hdeg += 360; else if (hdeg > 360) hdeg -= 360;
+  const dTheta = 30 * Math.exp(-Math.pow((hdeg - 275) / 25, 2));
+  const R_C = 2 * Math.sqrt(Math.pow(Cave, 7) / (Math.pow(Cave, 7) + C_25_7));
+  const S_C = 1 + 0.045 * Cave, S_H = 1 + 0.015 * Cave * T;
+  const Lm50s = Math.pow(Lave - 50, 2);
+  const S_L = 1 + 0.015 * Lm50s / Math.sqrt(20 + Lm50s);
+  const R_T = -Math.sin(dTheta * pi / 90) * R_C;
+  const fL = dL_ / S_L, fC = dC_ / S_C, fH = dH_ / S_H;
+  return Math.sqrt(fL * fL + fC * fC + fH * fH + R_T * fC * fH);
+}
+
+// ===========================================================================
+// 4) CUBO: string Kociemba (U R F D L B), validação de peças e rotação de faces
+//    (portado do main.py)
+// ===========================================================================
+const ORDEM = ["yellow", "green", "red", "white", "blue", "orange"];         // U R F D L B
+const FACES_K = "URFDLB";
+const LETRA = Object.fromEntries(ORDEM.map((c, i) => [c, FACES_K[i]]));
+const ORDEM_SCAN = ["white", "orange", "yellow", "red", "blue", "green"];
+// rotação "de fábrica" de cada face lida (np.rot90, sentido anti-horário)
+const ROT_PADRAO = { white: 3, orange: 1, yellow: 3, red: 3, blue: 2, green: 0 };
+
+function posFacelet(f, i, j) {
+  switch (f) {
+    case "U": return [j - 1, 1, i - 1];
+    case "R": return [1, 1 - i, 1 - j];
+    case "F": return [j - 1, 1 - i, 1];
+    case "D": return [j - 1, -1, 1 - i];
+    case "L": return [-1, 1 - i, j - 1];
+    case "B": return [1 - j, 1 - i, -1];
+  }
+}
+const PECAS = (() => {
+  const mapa = new Map();
+  let idx = 0;
+  for (const f of FACES_K) for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++, idx++) {
+    const k = posFacelet(f, i, j).join(",");
+    if (!mapa.has(k)) mapa.set(k, []);
+    mapa.get(k).push(idx);
+  }
+  return [...mapa.values()].filter(p => p.length >= 2);
+})();
+const ARESTAS = PECAS.filter(p => p.length === 2);
+const CANTOS = PECAS.filter(p => p.length === 3);
+const RESOLVIDO = [...FACES_K].map(f => f.repeat(9)).join("");
+const chave = (s, p) => [...new Set(p.map(i => s[i]))].sort().join("");
+const ARESTAS_OK = new Set(ARESTAS.map(p => chave(RESOLVIDO, p)));
+const CANTOS_OK = new Set(CANTOS.map(p => chave(RESOLVIDO, p)));
+
+function problemas(s) {
+  if (s.length !== 54) return [`tamanho ${s.length} (deveria ser 54)`];
+  const out = [];
+  for (const l of FACES_K) {
+    const n = [...s].filter(c => c === l).length;
+    if (n !== 9) out.push(`letra ${l} aparece ${n}x (deveria ser 9)`);
+  }
+  const vistas = new Set();
+  for (const [tipo, pecas, validas] of [["aresta", ARESTAS, ARESTAS_OK], ["canto", CANTOS, CANTOS_OK]]) {
+    for (const p of pecas) {
+      const k = chave(s, p);
+      const nome = p.map(i => s[i]).join("-");
+      const onde = p.map(i => `${FACES_K[Math.floor(i / 9)]}${(i % 9) + 1}`).join(", ");
+      if (!validas.has(k)) out.push(`${tipo} inexistente ${nome} (adesivos ${onde})`);
+      else if (k.length === p.length) {
+        if (vistas.has(tipo + k)) out.push(`${tipo} repetida ${nome} (adesivos ${onde})`);
+        vistas.add(tipo + k);
+      }
+    }
+  }
+  return out;
+}
+
+// np.rot90(a, k): k quartos de volta ANTI-horários (a = 9 itens, linha a linha)
+function rot90ccw(a, k) {
+  let g = [a.slice(0, 3), a.slice(3, 6), a.slice(6, 9)];
+  for (let t = 0; t < (((k % 4) + 4) % 4); t++) {
+    g = [0, 1, 2].map(i => [0, 1, 2].map(j => g[j][2 - i]));
+  }
+  return g.flat();
+}
+// k quartos de volta HORÁRIOS
+function girar9(a, k) {
+  let g = [a.slice(0, 3), a.slice(3, 6), a.slice(6, 9)];
+  for (let t = 0; t < (((k % 4) + 4) % 4); t++) {
+    g = [0, 1, 2].map(i => [0, 1, 2].map(j => g[2 - j][i]));
+  }
+  return g.flat();
+}
+
+function candidatosRotacao(blocos) {
+  const achados = [];
+  for (let n = 0; n < 4096; n++) {
+    const ks = [n & 3, (n >> 2) & 3, (n >> 4) & 3, (n >> 6) & 3, (n >> 8) & 3, (n >> 10) & 3];
+    const s = blocos.map((b, f) => girar9(b, ks[f]).join("")).join("");
+    if (!problemas(s).length) achados.push({ ks, s });
+  }
+  achados.sort((a, b) => a.ks.filter(Boolean).length - b.ks.filter(Boolean).length);
+  return achados;
+}
+
+// lidas: { white: [9 nomes de cor], ... } exatamente como vistos na câmera
+function resolverString(lidas) {
+  const avisos = [];
+  const blocos = ORDEM.map(nome => {
+    const g = rot90ccw(lidas[nome], ROT_PADRAO[nome]);
+    if (g[4] !== nome) avisos.push(`o centro da face ${nome} foi lido como "${g[4]}" — recalibre as cores`);
+    return g.map(c => LETRA[c]);
+  });
+  const original = blocos.map(b => b.join("")).join("");
+  const probs = problemas(original);
+  const cands = candidatosRotacao(blocos);
+  const escolhido = cands.length ? cands[0] : null;
+  return { blocos, original, probs, cands, escolhido, avisos };
+}
+
+// ===========================================================================
+// 5) CÂMERA E LEITURA
+// ===========================================================================
+const NOMES_PT = { white: "branca", orange: "laranja", yellow: "amarela", red: "vermelha", blue: "azul", green: "verde" };
+const ABREV = { white: "BRA", orange: "LAR", yellow: "AMA", red: "VRM", blue: "AZU", green: "VRD" };
+const HEX = { white: "#f4f4f2", orange: "#f58a07", yellow: "#f5d90a", red: "#d62828", blue: "#1d4ed8", green: "#16a34a" };
+// do colors.json do projeto (BGR) convertido para RGB -- ponto de partida
+const PALETA_PADRAO = {
+  red: [240, 92, 90], orange: [240, 146, 74], blue: [34, 170, 240],
+  green: [80, 240, 143], white: [220, 230, 240], yellow: [240, 240, 105],
+};
+// "de qual face, para qual": como girar o cubo (igual à tabela do main.py)
+const ROT_TABELA = {
+  white:  { yellow: "left-2", blue: "up-1", green: "down-1", orange: "left-1", red: "right-1" },
+  yellow: { white: "left-2", blue: "left-2", green: "left-2", orange: "left-3", red: "left-1" },
+  blue:   { white: "up-1", yellow: "up-1", green: "down-2", orange: "up-1", red: "up-1" },
+  green:  { white: "up-1", yellow: "up-1", blue: "up-2", orange: "up-1", red: "up-1" },
+  orange: { white: "left-1", yellow: "left-1", blue: "right-1", green: "right-1", red: "right-2" },
+  red:    { white: "left-1", yellow: "right-1", blue: "left-1", green: "left-1", orange: "left-2" },
+};
+const FRASE_GIRO = {
+  left: "para a ESQUERDA (a face da direita vem para a frente)",
+  right: "para a DIREITA (a face da esquerda vem para a frente)",
+  up: "para CIMA (a face de baixo vem para a frente)",
+  down: "para BAIXO (a face de cima vem para a frente)",
+};
+
+function guardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* sem storage */ } }
+function carregar(k, padrao) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : padrao; } catch (e) { return padrao; } }
+
+let paleta = { ...PALETA_PADRAO, ...carregar("cuboPaleta", {}) };
+let paletaLab = {};
+function recalcularPaleta() { paletaLab = Object.fromEntries(Object.entries(paleta).map(([n, c]) => [n, rgb2lab(c)])); }
+recalcularPaleta();
+
+function classificar(rgb) {
+  const lab = rgb2lab(rgb);
+  let melhor = null, dmin = Infinity;
+  for (const n in paletaLab) {
+    const d = ciede2000(lab, paletaLab[n]);
+    if (d < dmin) { dmin = d; melhor = n; }
+  }
+  return melhor;
+}
+
+const VOTOS_N = 7, VOTOS_MIN = 5;
+const video = document.getElementById("video");
+const visor = document.getElementById("visor");
+const vctx = visor.getContext("2d", { willReadFrequently: true });
+let stream = null, rodando = false, ultimoQuadro = 0;
+let votos = Array.from({ length: 9 }, () => []);
+let histCentro = [];                 // últimos RGB do centro (para calibrar)
+let lidas = {};                      // cor -> 9 nomes de cor
+let alvo = ORDEM_SCAN[0];            // face que o usuário deve mostrar
+let frente = null;                   // face que estava na frente na última captura
+let geometria = { x0: 0, y0: 0, cel: 0 };
+
+function moda(arr) {
+  const c = {};
+  for (const v of arr) c[v] = (c[v] || 0) + 1;
+  let m = null, n = 0;
+  for (const k in c) if (c[k] > n) { n = c[k]; m = k; }
+  return [m, n];
+}
+
+async function ligarCamera(deviceId) {
+  pararCamera();
+  setPill("pillCam", "busy", "Câmera: iniciando…");
+  try {
+    const base = { width: { ideal: 1280 }, height: { ideal: 720 } };
+    const video_ = deviceId ? { ...base, deviceId: { exact: deviceId } } : { ...base, facingMode: { ideal: "environment" } };
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: video_ });
+    video.srcObject = stream;
+    await video.play();
+    visor.width = Math.min(video.videoWidth || 640, 960);
+    visor.height = Math.round(visor.width * (video.videoHeight || 480) / (video.videoWidth || 640));
+    document.querySelector(".visor").style.aspectRatio = `${visor.width} / ${visor.height}`;
+    document.getElementById("visorMsg").hidden = true;
+    document.getElementById("btnCam").textContent = "Desligar câmera";
+    document.getElementById("btnCapturar").disabled = false;
+    setPill("pillCam", "ok", `Câmera: ligada (${video.videoWidth}x${video.videoHeight})`);
+    await listarCameras();
+    pedirWakeLock();
+    rodando = true;
+    requestAnimationFrame(laco);
+    atualizarInstrucao();
+  } catch (e) {
+    pararCamera();
+    const msg = e && e.name === "NotAllowedError" ? "permissão da câmera negada" : (e.message || e);
+    setPill("pillCam", "bad", "Câmera: erro");
+    log(`Câmera: ${msg}`, "erro");
+    mostrarAviso("avisoLeitura", `Não consegui abrir a câmera: ${msg}.`, "erro");
+  }
+}
+
+function pararCamera() {
+  rodando = false;
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  video.srcObject = null;
+  document.getElementById("visorMsg").hidden = false;
+  document.getElementById("btnCam").textContent = "Ligar câmera";
+  document.getElementById("btnCapturar").disabled = true;
+  vctx.clearRect(0, 0, visor.width, visor.height);
+  setPill("pillCam", "off", "Câmera: desligada");
+}
+
+async function listarCameras() {
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+    const sel = document.getElementById("selCam");
+    const atual = stream && stream.getVideoTracks()[0] && stream.getVideoTracks()[0].getSettings().deviceId;
+    sel.innerHTML = "";
+    devs.forEach((d, i) => {
+      const o = document.createElement("option");
+      o.value = d.deviceId; o.textContent = d.label || `Câmera ${i + 1}`;
+      if (d.deviceId === atual) o.selected = true;
+      sel.append(o);
+    });
+    sel.hidden = devs.length < 2;
+  } catch (e) { /* sem lista */ }
+}
+
+function laco(t) {
+  if (!rodando) return;
+  requestAnimationFrame(laco);
+  if (t - ultimoQuadro < 70) return;           // ~14 quadros por segundo
+  ultimoQuadro = t;
+  if (video.readyState < 2) return;
+
+  const w = visor.width, h = visor.height;
+  const espelho = document.getElementById("chkEspelho").checked;
+  vctx.save();
+  if (espelho) { vctx.translate(w, 0); vctx.scale(-1, 1); }
+  vctx.drawImage(video, 0, 0, w, h);
+  vctx.restore();
+
+  const frac = Number(document.getElementById("tamQuadro").value) / 100;
+  const lado = Math.min(w, h) * frac, cel = lado / 3;
+  const x0 = (w - lado) / 2, y0 = (h - lado) / 2;
+  geometria = { x0, y0, cel };
+
+  const meio = Math.max(2, Math.floor(cel * 0.14));
+  const amostras = [];
+  for (let i = 0; i < 9; i++) {
+    const cx = Math.round(x0 + ((i % 3) + 0.5) * cel), cy = Math.round(y0 + (Math.floor(i / 3) + 0.5) * cel);
+    const d = vctx.getImageData(cx - meio, cy - meio, meio * 2 + 1, meio * 2 + 1).data;
+    let r = 0, g = 0, b = 0, n = d.length / 4;
+    for (let k = 0; k < d.length; k += 4) { r += d[k]; g += d[k + 1]; b += d[k + 2]; }
+    amostras.push([r / n, g / n, b / n]);
+  }
+  amostras.forEach((rgb, i) => {
+    const v = votos[i]; v.push(classificar(rgb)); if (v.length > VOTOS_N) v.shift();
+  });
+  histCentro.push(amostras[4]); if (histCentro.length > 8) histCentro.shift();
+
+  // sobreposição: quadro 3x3, ponto de amostra e rótulo
+  vctx.lineWidth = 2; vctx.strokeStyle = "rgba(255,255,255,.9)";
+  vctx.strokeRect(x0, y0, lado, lado);
+  vctx.strokeStyle = "rgba(255,255,255,.55)"; vctx.lineWidth = 1;
+  for (let k = 1; k < 3; k++) {
+    vctx.beginPath(); vctx.moveTo(x0 + k * cel, y0); vctx.lineTo(x0 + k * cel, y0 + lado); vctx.stroke();
+    vctx.beginPath(); vctx.moveTo(x0, y0 + k * cel); vctx.lineTo(x0 + lado, y0 + k * cel); vctx.stroke();
+  }
+  vctx.font = `bold ${Math.max(11, Math.round(cel * 0.2))}px system-ui, sans-serif`;
+  vctx.textAlign = "center"; vctx.textBaseline = "middle";
+  for (let i = 0; i < 9; i++) {
+    const cx = x0 + ((i % 3) + 0.5) * cel, cy = y0 + (Math.floor(i / 3) + 0.5) * cel;
+    const [nome, n] = moda(votos[i]);
+    const estavel = votos[i].length >= VOTOS_MIN && n >= VOTOS_MIN;
+    const rotulo = nome ? ABREV[nome] : "";
+    vctx.beginPath(); vctx.arc(cx, cy - cel * 0.2, cel * 0.09, 0, Math.PI * 2);
+    vctx.fillStyle = `rgb(${amostras[i].map(Math.round).join(",")})`; vctx.fill();
+    vctx.lineWidth = 2; vctx.strokeStyle = estavel ? HEX[nome] : "rgba(255,255,255,.7)"; vctx.stroke();
+    const tw = vctx.measureText(rotulo).width + 10, th = Math.max(16, cel * 0.24);
+    vctx.fillStyle = "rgba(0,0,0,.62)";
+    vctx.fillRect(cx - tw / 2, cy + cel * 0.02, tw, th);
+    vctx.fillStyle = estavel ? "#fff" : "#d0d4da";
+    vctx.fillText(estavel ? rotulo : rotulo + "?", cx, cy + cel * 0.02 + th / 2);
+  }
+}
+
+function lerEstavel() {
+  const nomes = [];
+  for (let i = 0; i < 9; i++) {
+    const [nome, n] = moda(votos[i]);
+    if (!nome || votos[i].length < VOTOS_MIN || n < VOTOS_MIN) return null;
+    nomes.push(nome);
+  }
+  return nomes;
+}
+
+function capturar() {
+  const g = lerEstavel();
+  if (!g) { mostrarAviso("avisoLeitura", "Leitura instável: segure o cubo parado e bem iluminado por um instante e toque de novo.", "erro"); return; }
+  if (g[4] !== alvo) {
+    mostrarAviso("avisoLeitura", `O centro foi lido como ${NOMES_PT[g[4]]}, mas a face esperada é a ${NOMES_PT[alvo]}. Mostre a face certa (ou calibre as cores).`, "erro");
+    return;
+  }
+  lidas[alvo] = g;
+  frente = alvo;
+  document.getElementById("avisoLeitura").hidden = true;
+  log(`Face ${NOMES_PT[alvo]} lida: ${g.map(c => ABREV[c][0]).join("")}`, "ok");
+  const prox = ORDEM_SCAN.find(c => !lidas[c]);
+  if (prox) alvo = prox;
+  votos = Array.from({ length: 9 }, () => []);
+  guardar("cuboLidas", lidas);
+  atualizarLeitura();
+}
+
+function atualizarInstrucao() {
+  const el = document.getElementById("instrucao");
+  const feitas = Object.keys(lidas).length;
+  if (feitas === 6) { el.innerHTML = "As 6 faces foram lidas. Confira o resultado abaixo."; document.getElementById("btnCapturar").textContent = "Capturar de novo"; return; }
+  const nome = NOMES_PT[alvo].toUpperCase();
+  let txt;
+  if (!frente || !ROT_TABELA[frente] || !ROT_TABELA[frente][alvo]) {
+    txt = alvo === "white" ? `Mostre a face <b>BRANCA</b> com o centro <b>verde</b> para cima.` : `Mostre a face <b>${nome}</b>.`;
+  } else {
+    const [acao, vezes] = ROT_TABELA[frente][alvo].split("-");
+    txt = `Gire o cubo ${vezes > 1 ? vezes + " vezes " : ""}${FRASE_GIRO[acao]} e mostre a face <b>${nome}</b>.`;
+  }
+  el.innerHTML = `${txt}<br><span class="dica">Encaixe o cubo no quadro e toque em “Capturar”.</span>`;
+  document.getElementById("btnCapturar").textContent = `Capturar face ${NOMES_PT[alvo]}`;
+}
+
+// planificação em cruz (igual ao draw.py): coluna, linha
+const POS_REDE = { yellow: [1, 0], blue: [0, 1], red: [1, 1], green: [2, 1], orange: [3, 1], white: [1, 2] };
+function desenharRede() {
+  const box = document.getElementById("rede");
+  box.innerHTML = "";
+  for (const nome of ORDEM_SCAN) {
+    const [c, l] = POS_REDE[nome];
+    const m = document.createElement("div");
+    m.className = "mini" + (lidas[nome] ? " feita" : "") + (nome === alvo && Object.keys(lidas).length < 6 ? " alvo" : "");
+    m.style.gridColumn = c + 1; m.style.gridRow = l + 1;
+    m.title = `Face ${NOMES_PT[nome]}`;
+    m.setAttribute("role", "button"); m.tabIndex = 0;
+    for (let i = 0; i < 9; i++) {
+      const s = document.createElement("span");
+      if (lidas[nome]) s.style.background = HEX[lidas[nome][i]];
+      m.append(s);
+    }
+    const refazer = () => { delete lidas[nome]; alvo = nome; frente = null; votos = Array.from({ length: 9 }, () => []); guardar("cuboLidas", lidas); atualizarLeitura(); };
+    m.addEventListener("click", refazer);
+    m.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); refazer(); } });
+    box.append(m);
+  }
+}
+
+function atualizarLeitura() {
+  const n = Object.keys(lidas).length;
+  setPill("pillLeitura", n === 6 ? "ok" : (n ? "busy" : "off"), `Leitura: ${n}/6 faces`);
+  desenharRede();
+  atualizarInstrucao();
+
+  const box = document.getElementById("resultado");
+  if (n < 6) { box.hidden = true; return; }
+  const r = resolverString(lidas);
+  const final = r.escolhido ? r.escolhido.s : r.original;
+  box.hidden = false;
+  document.getElementById("cubeStr").textContent = final.match(/.{9}/g).join(" ");
+  const av = document.getElementById("avisoCubo");
+  const det = document.getElementById("detalhesCubo");
+  det.innerHTML = "";
+  const li = t => { const e = document.createElement("li"); e.textContent = t; det.append(e); };
+  r.avisos.forEach(li);
+  if (r.escolhido) {
+    av.className = "aviso ok"; av.textContent = "Cubo válido: todas as arestas e cantos existem.";
+    const ajustes = r.escolhido.ks.map((k, i) => k ? `${FACES_K[i]}: ${k}` : null).filter(Boolean);
+    if (ajustes.length) li(`Orientação corrigida automaticamente (quartos de volta horários): ${ajustes.join(", ")}.`);
+    if (r.cands.length > 1) li(`${r.cands.length} combinações de rotação são válidas; usei a que mexe em menos faces.`);
+  } else {
+    av.className = "aviso erro";
+    av.textContent = "Cubo impossível: há adesivo com a cor lida errada. Releia as faces (toque nelas), melhore a luz ou calibre as cores.";
+    r.probs.slice(0, 8).forEach(li);
+  }
+  document.getElementById("btnCopiar").dataset.str = final;
+  document.getElementById("btnCopiar").disabled = !r.escolhido;
+}
+
+function mostrarAviso(id, texto, tipo) {
+  const el = document.getElementById(id);
+  el.textContent = texto; el.className = "aviso" + (tipo ? " " + tipo : ""); el.hidden = false;
+}
+
+// --- calibração de cores ---
+function desenharPaleta() {
+  const box = document.getElementById("paleta");
+  box.innerHTML = "";
+  for (const nome of ORDEM_SCAN) {
+    const c = document.createElement("div");
+    c.className = "chip";
+    c.innerHTML = `<div class="sw" style="background: rgb(${paleta[nome].map(Math.round).join(",")})"></div>
+                   <div>${NOMES_PT[nome]}</div><button data-cal="${nome}">Calibrar</button>`;
+    box.append(c);
+  }
+}
+function calibrar(nome) {
+  if (!rodando || histCentro.length < 3) { log("Ligue a câmera e aponte o adesivo para o quadrado central.", "erro"); return; }
+  const n = histCentro.length;
+  const rgb = [0, 1, 2].map(k => histCentro.reduce((s, c) => s + c[k], 0) / n);
+  paleta[nome] = rgb;
+  guardar("cuboPaleta", paleta);
+  recalcularPaleta(); desenharPaleta();
+  log(`Cor ${NOMES_PT[nome]} calibrada: rgb(${rgb.map(Math.round).join(", ")})`, "ok");
+}
+
+// manter a tela acesa enquanto a câmera ou o robô estão em uso
+let wake = null;
+async function pedirWakeLock() { try { if ("wakeLock" in navigator && !wake) { wake = await navigator.wakeLock.request("screen"); wake.addEventListener("release", () => { wake = null; }); } } catch (e) { /* ignorar */ } }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && (rodando || rxChar)) pedirWakeLock(); });
+
+// ===========================================================================
+// 6) BLUETOOTH: conexão e envio
+// ===========================================================================
+const enc = new TextEncoder(), dec = new TextDecoder();
+let device = null, rxChar = null, pendente = null, ocupado = false, parar = false;
+
+function envioBruto(cmd) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => { pendente = null; reject(new Error(`o ESP32 não confirmou "${cmd}"`)); }, TIMEOUT_OK);
+    pendente = { ok: () => { clearTimeout(t); resolve(); }, falha: e => { clearTimeout(t); reject(e); } };
+    const dados = enc.encode(cmd + "\n");
+    const w = rxChar.writeValueWithResponse ? rxChar.writeValueWithResponse(dados) : rxChar.writeValue(dados);
+    Promise.resolve(w).catch(err => { clearTimeout(t); pendente = null; reject(err); });
+  });
+}
+function aoReceber(ev) {
+  const txt = dec.decode(ev.target.value).trim().toUpperCase();
+  if (txt.startsWith("OK") && pendente) { const p = pendente; pendente = null; p.ok(); }
+}
+
+async function conectar() {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SVC] }, { name: NOME_BLE }],
+      optionalServices: [SVC],
+    });
+    device.addEventListener("gattserverdisconnected", aoDesconectar);
+    log(`Conectando a ${device.name || "dispositivo"}…`);
+    setPill("pillBle", "busy", "Bluetooth: conectando…");
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    rxChar = await svc.getCharacteristic(RX);
+    const tx = await svc.getCharacteristic(TX);
+    await tx.startNotifications();
+    tx.addEventListener("characteristicvaluechanged", aoReceber);
+    document.getElementById("devNome").textContent = `Conectado a ${device.name || "ESP32"}`;
+    document.getElementById("btnConectar").hidden = true;
+    document.getElementById("btnDesconectar").hidden = false;
+    definirEstado("on");
+    pedirWakeLock();
+    log("Conectado.", "ok");
+  } catch (e) {
+    if (e && e.name === "NotFoundError") log("Seleção cancelada.");
+    else log(`Falha ao conectar: ${e.message || e}`, "erro");
+    aoDesconectar(null, true);
+  }
+}
+function desconectar() {
+  parar = true;
+  if (device && device.gatt && device.gatt.connected) device.gatt.disconnect();
+  else aoDesconectar();
+}
+function aoDesconectar(_ev, silencioso) {
+  const estava = document.body.dataset.estado !== "off";
+  if (pendente) { const p = pendente; pendente = null; p.falha(new Error("conexão perdida")); }
+  rxChar = null;
+  document.getElementById("devNome").textContent = "Nenhum ESP32 conectado";
+  document.getElementById("btnConectar").hidden = false;
+  document.getElementById("btnDesconectar").hidden = true;
+  document.getElementById("progresso").hidden = true;
+  definirEstado("off");
+  if (estava && !silencioso) log("Bluetooth desconectado.", "erro");
+}
+
+// ===========================================================================
+// 7) EXECUÇÃO: um comando por vez, esperando o OK do ESP32
+// ===========================================================================
+const CMD_OK = /^([1-4][OC]|[ROBG][019])$/;
+
+function marcarEstado(cmd) {
+  const k = cmd[0];
+  document.querySelectorAll(`[data-cmd][data-key="${k}"]`).forEach(b => b.classList.toggle("on", b.dataset.cmd === cmd));
+}
+
+async function executar(cmds, titulo) {
+  if (ocupado || !rxChar) return;
+  ocupado = true; parar = false;
+  definirEstado("busy");
+  const prog = document.getElementById("progresso");
+  const mostrar = cmds.length > 1;
+  prog.hidden = !mostrar;
+  try {
+    for (let i = 0; i < cmds.length; i++) {
+      if (parar) { log(`Parado após ${i} de ${cmds.length} comandos. Se a garra ficou fechada, use “Abrir todas as garras”.`, "erro"); return; }
+      const c = cmds[i];
+      if (mostrar) {
+        document.getElementById("barra").style.width = `${(i / cmds.length) * 100}%`;
+        document.getElementById("progTxt").textContent = `${titulo ? titulo + " · " : ""}${i + 1}/${cmds.length}  ${c}`;
+      }
+      const t0 = performance.now();
+      await envioBruto(c);
+      marcarEstado(c);
+      document.getElementById("ultimoCmd").textContent = `Último comando: ${c} (${Math.round(performance.now() - t0)} ms)`;
+      if (!mostrar) log(c, "ok");
+    }
+    if (mostrar) { document.getElementById("barra").style.width = "100%"; log(`${titulo || "Sequência"} concluído (${cmds.length} comandos).`, "ok"); }
+  } catch (e) {
+    log(`Erro: ${e.message || e}`, "erro");
+  } finally {
+    ocupado = false;
+    if (rxChar) definirEstado("on");
+    setTimeout(() => { if (!ocupado) prog.hidden = true; }, 1200);
+  }
+}
+
+// ===========================================================================
+// 8) INTERFACE
+// ===========================================================================
+function setPill(id, estado, texto) {
+  const p = document.getElementById(id);
+  p.dataset.s = estado; p.querySelector("span").textContent = texto;
+}
+function definirEstado(e) {
+  document.body.dataset.estado = e;
+  setPill("pillBle", e === "off" ? "off" : "ok", e === "off" ? "Bluetooth: desconectado" : "Bluetooth: conectado");
+  setPill("pillRobo", e === "busy" ? "busy" : (e === "on" ? "ok" : "off"), e === "busy" ? "Robô: executando…" : (e === "on" ? "Robô: pronto" : "Robô: parado"));
+  const livre = e === "on";
+  document.querySelectorAll(".ctl, [data-cmd], [data-macro], [data-mov]").forEach(el => { el.disabled = !livre; });
+  document.getElementById("btnParar").disabled = e !== "busy";
+}
+function log(msg, tipo = "") {
+  const li = document.createElement("li");
+  if (tipo) li.className = tipo;
+  const t = document.createElement("time");
+  t.textContent = new Date().toLocaleTimeString("pt-BR");
+  li.append(t, msg);
+  const ul = document.getElementById("log");
+  ul.prepend(li);
+  while (ul.children.length > 150) ul.lastChild.remove();
+}
+
+function montarFaces() {
+  const box = document.getElementById("faces");
+  for (const f of FACES) {
+    const s = document.createElement("section");
+    s.className = "face"; s.style.setProperty("--c", f.cor);
+    s.innerHTML = `
+      <header><h3>${f.nome}</h3><small>Garra ${f.garra} · Giro ${f.id}</small></header>
+      <div class="row"><span class="lab">Garra</span>
+        <button data-cmd="${f.garra}O" data-key="${f.garra}">Abrir</button>
+        <button data-cmd="${f.garra}C" data-key="${f.garra}">Fechar</button></div>
+      <div class="row"><span class="lab">Giro</span>
+        <button data-cmd="${f.id}0" data-key="${f.id}">0°</button>
+        <button data-cmd="${f.id}9" data-key="${f.id}">90°</button>
+        <button data-cmd="${f.id}1" data-key="${f.id}">180°</button></div>`;
+    box.append(s);
+  }
+}
+function montarMovimentos() {
+  const box = document.getElementById("movs");
+  for (const f of ["U", "D", "F", "B", "R", "L"]) {
+    const l = document.createElement("div");
+    l.className = "linha";
+    l.innerHTML = `<b>${f}</b><button data-mov="${f}">${f}</button><button data-mov="${f}'">${f}'</button><button data-mov="${f}2">${f}2</button>`;
+    box.append(l);
+  }
+}
+
+function iniciar() {
+  montarFaces(); montarMovimentos(); desenharPaleta();
+  lidas = carregar("cuboLidas", {});
+  if (!ORDEM_SCAN.every(c => lidas[c] === undefined || (Array.isArray(lidas[c]) && lidas[c].length === 9))) lidas = {};
+  alvo = ORDEM_SCAN.find(c => !lidas[c]) || ORDEM_SCAN[0];
+  document.getElementById("tamQuadro").value = carregar("cuboQuadro", 70);
+  document.getElementById("chkEspelho").checked = carregar("cuboEspelho", false);
+
+  const aviso = document.getElementById("avisoSuporte");
+  const falta = [];
+  if (!window.isSecureContext) { aviso.textContent = "Esta página precisa ser aberta por HTTPS (ou localhost) para usar câmera e Bluetooth."; aviso.hidden = false; }
+  else {
+    if (!("bluetooth" in navigator)) falta.push("Bluetooth");
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) falta.push("câmera");
+    if (falta.length) { aviso.textContent = `Este navegador não suporta ${falta.join(" e ")}. Use o Chrome (ou Edge) no Android ou no computador. No iPhone/iPad o Bluetooth não funciona.`; aviso.hidden = false; }
+  }
+  if (!("bluetooth" in navigator)) document.getElementById("btnConectar").disabled = true;
+
+  document.getElementById("btnConectar").addEventListener("click", conectar);
+  document.getElementById("btnDesconectar").addEventListener("click", desconectar);
+  document.getElementById("btnParar").addEventListener("click", () => { parar = true; log("Parando…"); });
+
+  document.getElementById("btnCam").addEventListener("click", () => (stream ? pararCamera() : ligarCamera()));
+  document.getElementById("selCam").addEventListener("change", e => ligarCamera(e.target.value));
+  document.getElementById("btnCapturar").addEventListener("click", () => {
+    if (Object.keys(lidas).length === 6) { lidas = {}; alvo = ORDEM_SCAN[0]; frente = null; guardar("cuboLidas", lidas); atualizarLeitura(); return; }
+    capturar();
+  });
+  document.getElementById("tamQuadro").addEventListener("input", e => guardar("cuboQuadro", Number(e.target.value)));
+  document.getElementById("chkEspelho").addEventListener("change", e => { guardar("cuboEspelho", e.target.checked); votos = Array.from({ length: 9 }, () => []); });
+  document.getElementById("btnLimpar").addEventListener("click", () => { lidas = {}; alvo = ORDEM_SCAN[0]; frente = null; guardar("cuboLidas", lidas); atualizarLeitura(); });
+  document.getElementById("btnCopiar").addEventListener("click", async e => {
+    const s = e.currentTarget.dataset.str || "";
+    try { await navigator.clipboard.writeText(s); log("String do cubo copiada.", "ok"); }
+    catch (err) { log("Não consegui copiar; selecione o texto manualmente.", "erro"); }
+  });
+  document.getElementById("btnPaletaPadrao").addEventListener("click", () => { paleta = { ...PALETA_PADRAO }; guardar("cuboPaleta", {}); recalcularPaleta(); desenharPaleta(); log("Cores padrão restauradas."); });
+
+  document.addEventListener("click", ev => {
+    const b = ev.target.closest("button");
+    if (!b || b.disabled) return;
+    if (b.dataset.cal) calibrar(b.dataset.cal);
+    else if (b.dataset.cmd) executar([b.dataset.cmd]);
+    else if (b.dataset.macro) executar(MACROS[b.dataset.macro](), b.textContent.trim());
+    else if (b.dataset.mov) executar(comandosDoMovimento(b.dataset.mov), b.dataset.mov);
+  });
+
+  const rodarSeq = () => {
+    try {
+      const movs = lerSequencia(document.getElementById("seq").value);
+      if (!movs.length) return;
+      executar(movs.flatMap(comandosDoMovimento), movs.join(" "));
+    } catch (e) { log(e.message, "erro"); }
+  };
+  document.getElementById("btnSeq").addEventListener("click", rodarSeq);
+  document.getElementById("seq").addEventListener("keydown", e => { if (e.key === "Enter") rodarSeq(); });
+
+  const rodarLivre = () => {
+    const el = document.getElementById("livre");
+    const c = el.value.trim().toUpperCase();
+    if (!CMD_OK.test(c)) { log(`Comando inválido: "${c}"`, "erro"); return; }
+    executar([c]); el.value = "";
+  };
+  document.getElementById("btnLivre").addEventListener("click", rodarLivre);
+  document.getElementById("livre").addEventListener("keydown", e => { if (e.key === "Enter") rodarLivre(); });
+
+  definirEstado("off");
+  atualizarLeitura();
+  log("Pronto. Conecte o ESP32 e ligue a câmera.");
+}
+
+// pequena API para testes automatizados
+window.cubo = { rgb2lab, ciede2000, classificar, rot90ccw, girar9, problemas, resolverString,
+                lerSequencia, comandosDoMovimento, ORDEM, ROT_PADRAO, setPaleta: p => { paleta = p; recalcularPaleta(); } };
+iniciar();
+</script>
+</body>
+</html>
