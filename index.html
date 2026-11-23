@@ -94,6 +94,11 @@
   #cubeStr { font: 15px/1.6 ui-monospace, Menlo, Consolas, monospace; word-break: break-all; background: var(--btn); padding: 10px 12px; border-radius: 10px; margin: 8px 0; letter-spacing: .04em; }
   .resultado ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
 
+  .sol-movs { font: 600 16px/1.7 ui-monospace, Menlo, Consolas, monospace; background: var(--btn); padding: 10px 12px; border-radius: 10px; margin: 8px 0; letter-spacing: .03em; word-spacing: .25em; }
+  .auto { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; font-size: 14px; }
+  .auto input[type="number"] { width: 72px; min-height: 40px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); padding: 0 8px; font: inherit; }
+  .auto label { display: inline-flex; align-items: center; gap: 6px; }
+
   /* robô */
   .faces { display: grid; gap: 12px; grid-template-columns: 1fr; }
   @media (min-width: 560px) { .faces { grid-template-columns: 1fr 1fr; } }
@@ -130,6 +135,7 @@
       <span class="pill" id="pillBle" data-s="off"><i></i><span>Bluetooth: desconectado</span></span>
       <span class="pill" id="pillCam" data-s="off"><i></i><span>Câmera: desligada</span></span>
       <span class="pill" id="pillLeitura" data-s="off"><i></i><span>Leitura: 0/6 faces</span></span>
+      <span class="pill" id="pillSolver" data-s="off"><i></i><span>Solver: —</span></span>
       <span class="pill" id="pillRobo" data-s="off"><i></i><span>Robô: parado</span></span>
     </div>
     <p class="aviso" id="avisoSuporte" hidden></p>
@@ -177,11 +183,29 @@
       <div id="cubeStr"></div>
       <p class="aviso" id="avisoCubo"></p>
       <ul id="detalhesCubo"></ul>
+
+      <div id="solucaoBox" hidden>
+        <h2 style="margin-top:18px">Solução</h2>
+        <p class="aviso" id="avisoSolucao"></p>
+        <div class="sol-movs" id="solucaoMovs" hidden></div>
+        <p class="dica" id="solucaoInfo"></p>
+        <div class="auto">
+          <label><input type="checkbox" id="chkAuto" checked> Enviar ao robô automaticamente, após</label>
+          <input type="number" id="atraso" min="0" max="60" value="10" aria-label="Segundos de espera antes de iniciar">
+          <span>s</span>
+        </div>
+        <p class="aviso" id="avisoContagem" hidden></p>
+        <div class="acoes">
+          <button class="ctl primary" id="btnExecSol" disabled>Executar no robô agora</button>
+          <button id="btnCancelarContagem" hidden>Cancelar contagem</button>
+        </div>
+      </div>
+
       <div class="acoes">
         <button id="btnCopiar">Copiar string</button>
         <button id="btnLimpar">Limpar leitura</button>
       </div>
-      <p class="dica">Resolva esta string no Kociemba (no PC, <code>sv.solve(string, 24, 5)</code>, ou num solver online) e cole a solução em “Movimentos do cubo”, mais abaixo.</p>
+      <p class="dica">A solução é calculada aqui mesmo, no navegador (Kociemba, duas fases), e enviada ao ESP32 pelos mesmos comandos dos botões de movimento.</p>
     </div>
 
     <details>
@@ -239,8 +263,260 @@
     <ul id="log"></ul>
   </section>
 
-  <footer>Bluetooth (BLE) e câmera exigem HTTPS e funcionam no Chrome/Edge (Android e computador).</footer>
+  <footer>Tudo roda no seu navegador (leitura, solver e Bluetooth). Bluetooth (BLE) e câmera exigem HTTPS e funcionam no Chrome/Edge (Android e computador).</footer>
 </main>
+
+<script id="solverSrc" type="text/plain">
+// Solver Kociemba (duas fases) em JavaScript puro, sem dependências.
+// Entrada: string de 54 letras na ordem U R F D L B (igual ao twophase / kociemba).
+// Saída: lista de movimentos ["R", "U'", "F2", ...].
+// As tabelas são derivadas da geometria 3D do cubo (nada decorado à mão) e a solução
+// é verificada no nível dos adesivos antes de ser devolvida.
+const CubeSolver = (() => {
+  "use strict";
+  const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+
+  // ---------------------------------------------------------------- geometria
+  const FACES = "URFDLB";
+  const NORM = { U: [0, 1, 0], R: [1, 0, 0], F: [0, 0, 1], D: [0, -1, 0], L: [-1, 0, 0], B: [0, 0, -1] };
+  function posFacelet(f, i, j) {
+    switch (f) {
+      case "U": return [j - 1, 1, i - 1];
+      case "R": return [1, 1 - i, 1 - j];
+      case "F": return [j - 1, 1 - i, 1];
+      case "D": return [j - 1, -1, 1 - i];
+      case "L": return [-1, 1 - i, j - 1];
+      default:  return [1 - j, 1 - i, -1];      // B
+    }
+  }
+  const FL = [];
+  for (const f of FACES) for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) FL.push({ p: posFacelet(f, i, j), n: NORM[f] });
+  const key = (p, n) => p.join(",") + "|" + n.join(",");
+  const IDX = new Map(FL.map((e, k) => [key(e.p, e.n), k]));
+  const AXIS = { U: [1, 1], R: [0, 1], F: [2, 1], D: [1, -1], L: [0, -1], B: [2, -1] };
+  // rotação de -90° em torno de k (sentido horário visto de fora da face)
+  function rot(v, k) {
+    const d = v[0] * k[0] + v[1] * k[1] + v[2] * k[2];
+    return [v[1] * k[2] - v[2] * k[1] + d * k[0], v[2] * k[0] - v[0] * k[2] + d * k[1], v[0] * k[1] - v[1] * k[0] + d * k[2]];
+  }
+  const FPERM = FACES.split("").map(f => {
+    const [a, s] = AXIS[f]; const k = [0, 0, 0]; k[a] = s;
+    return FL.map((e, idx) => (e.p[a] === s ? IDX.get(key(rot(e.p, k), rot(e.n, k))) : idx));
+  });
+  function girarFacelets(st, f) {            // um quarto de volta horário na face f
+    const out = new Array(54), P = FPERM[f];
+    for (let i = 0; i < 54; i++) out[P[i]] = st[i];
+    return out;
+  }
+
+  // ------------------------------------------------------- peças (cubies)
+  const CORNER_POS = [[1, 1, 1], [-1, 1, 1], [-1, 1, -1], [1, 1, -1], [1, -1, 1], [-1, -1, 1], [-1, -1, -1], [1, -1, -1]];
+  const EDGE_POS = [[1, 1, 0], [0, 1, 1], [-1, 1, 0], [0, 1, -1], [1, -1, 0], [0, -1, 1], [-1, -1, 0], [0, -1, -1],
+                    [1, 0, 1], [-1, 0, 1], [-1, 0, -1], [1, 0, -1]];       // 0..7 camadas U/D, 8..11 fatia do meio
+  const stickersAt = p => { const o = []; FL.forEach((e, k) => { if (e.p[0] === p[0] && e.p[1] === p[1] && e.p[2] === p[2]) o.push(k); }); return o; };
+  const det3 = (a, b, c) => a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
+  // adesivos de cada canto em ordem cíclica começando pelo adesivo da face U/D
+  const CSLOT = CORNER_POS.map(p => {
+    const s = stickersAt(p), y = s.find(k => FL[k].n[1] !== 0), [a, b] = s.filter(k => k !== y);
+    return det3(FL[y].n, FL[a].n, FL[b].n) > 0 ? [y, a, b] : [y, b, a];
+  });
+  // arestas: [adesivo primário, outro]; primário = face U/D (camadas) ou F/B (fatia)
+  const ESLOT = EDGE_POS.map(p => {
+    const s = stickersAt(p);
+    if (p[1] !== 0) { const y = s.find(k => FL[k].n[1] !== 0); return [y, s.find(k => k !== y)]; }
+    const z = s.find(k => FL[k].n[2] !== 0); return [z, s.find(k => k !== z)];
+  });
+  const RES = FACES.split("").flatMap(f => Array(9).fill(f));
+  const ckey = L => L.slice().sort().join("");
+  const CMAP = new Map(CSLOT.map((sl, i) => [ckey(sl.map(k => RES[k])), i]));
+  const EMAP = new Map(ESLOT.map((sl, i) => [ckey(sl.map(k => RES[k])), i]));
+  const EPRIM = ESLOT.map((sl, i) => sl.map(k => RES[k]).find(c => (i < 8 ? (c === "U" || c === "D") : (c === "F" || c === "B"))));
+
+  function cubieDe(st) {
+    const cp = [], co = [], ep = [], eo = [], vc = new Set(), ve = new Set();
+    for (let i = 0; i < 8; i++) {
+      const L = CSLOT[i].map(k => st[k]), id = CMAP.get(ckey(L));
+      if (id === undefined) throw new Error(`Some corners are undefined (canto ${L.join("-")} não existe)`);
+      if (vc.has(id)) throw new Error(`Some corners are duplicated (canto ${L.join("-")} aparece 2x)`);
+      vc.add(id); cp.push(id); co.push(L.findIndex(c => c === "U" || c === "D"));
+    }
+    for (let i = 0; i < 12; i++) {
+      const L = ESLOT[i].map(k => st[k]), id = EMAP.get(ckey(L));
+      if (id === undefined) throw new Error(`Some edges are undefined (aresta ${L.join("-")} não existe)`);
+      if (ve.has(id)) throw new Error(`Some edges are duplicated (aresta ${L.join("-")} aparece 2x)`);
+      ve.add(id); ep.push(id); eo.push(L[0] === EPRIM[id] ? 0 : 1);
+    }
+    return { cp, co, ep, eo };
+  }
+  function compor(a, m) {                    // estado a, depois o movimento m
+    const cp = [], co = [], ep = [], eo = [];
+    for (let i = 0; i < 8; i++) { cp.push(a.cp[m.cp[i]]); co.push((a.co[m.cp[i]] + m.co[i]) % 3); }
+    for (let i = 0; i < 12; i++) { ep.push(a.ep[m.ep[i]]); eo.push((a.eo[m.ep[i]] + m.eo[i]) % 2); }
+    return { cp, co, ep, eo };
+  }
+  const ID = cubieDe(RES);
+  const MV1 = FACES.split("").map((_, f) => cubieDe(girarFacelets(RES, f)));
+  const MV = [];                                       // id = face*3 + (0: X, 1: X2, 2: X')
+  for (let f = 0; f < 6; f++) { let c = ID; for (let p = 0; p < 3; p++) { c = compor(c, MV1[f]); MV[f * 3 + p] = c; } }
+  const NOME_MOV = m => FACES[(m / 3) | 0] + ["", "2", "'"][m % 3];
+
+  // ------------------------------------------------------------ coordenadas
+  const FACT = [1, 1, 2, 6, 24, 120, 720, 5040, 40320];
+  function rankPerm(a, n) { let r = 0; for (let i = 0; i < n - 1; i++) { let c = 0; for (let j = i + 1; j < n; j++) if (a[j] < a[i]) c++; r += c * FACT[n - 1 - i]; } return r; }
+  function unrankPerm(r, n, out) {
+    const av = []; for (let i = 0; i < n; i++) av.push(i);
+    for (let i = 0; i < n; i++) { const f = FACT[n - 1 - i], q = Math.floor(r / f); r -= q * f; out[i] = av.splice(q, 1)[0]; }
+    return out;
+  }
+  const twistOf = co => { let t = 0; for (let i = 0; i < 7; i++) t = t * 3 + co[i]; return t; };
+  const flipOf = eo => { let t = 0; for (let i = 0; i < 11; i++) t = t * 2 + eo[i]; return t; };
+  function coDeTwist(t, o) { let s = 0; for (let i = 6; i >= 0; i--) { o[i] = t % 3; s += o[i]; t = (t - o[i]) / 3; } o[7] = (3 - (s % 3)) % 3; }
+  function eoDeFlip(t, o) { let s = 0; for (let i = 10; i >= 0; i--) { o[i] = t % 2; s += o[i]; t = (t - o[i]) / 2; } o[11] = s % 2; }
+  const pop = x => { let c = 0; while (x) { c += x & 1; x >>= 1; } return c; };
+
+  const P2 = [0, 1, 2, 9, 10, 11, 4, 13, 7, 16];          // U U2 U' D D2 D' R2 L2 F2 B2
+  const P2FACE = P2.map(m => (m / 3) | 0);
+  let ready = false, M2I, I2M, SS;
+  let twistMove, flipMove, sliceMove, cpMove, epMove, spMove, prunTS, prunFS, prunCS, prunES;
+
+  function buildPrune(nA, nB, mA, mB, nm, sA, sB) {
+    const tab = new Int8Array(nA * nB).fill(-1); tab[sA * nB + sB] = 0;
+    for (let d = 0, any = true; any; d++) {
+      any = false;
+      for (let idx = 0; idx < tab.length; idx++) {
+        if (tab[idx] !== d) continue;
+        const a = (idx / nB) | 0, b = idx - a * nB;
+        for (let m = 0; m < nm; m++) {
+          const ni = mA[a * nm + m] * nB + mB[b * nm + m];
+          if (tab[ni] < 0) { tab[ni] = d + 1; any = true; }
+        }
+      }
+    }
+    return tab;
+  }
+
+  function init() {
+    if (ready) return;
+    M2I = new Int16Array(4096).fill(-1); I2M = [];
+    for (let m = 0; m < 4096; m++) if (pop(m) === 4) { M2I[m] = I2M.length; I2M.push(m); }
+    SS = M2I[0b111100000000];
+    twistMove = new Uint16Array(2187 * 18); flipMove = new Uint16Array(2048 * 18); sliceMove = new Uint16Array(495 * 18);
+    const co = new Array(8), eo = new Array(12);
+    for (let t = 0; t < 2187; t++) { coDeTwist(t, co); for (let m = 0; m < 18; m++) { const mv = MV[m]; let v = 0; for (let i = 0; i < 7; i++) v = v * 3 + ((co[mv.cp[i]] + mv.co[i]) % 3); twistMove[t * 18 + m] = v; } }
+    for (let t = 0; t < 2048; t++) { eoDeFlip(t, eo); for (let m = 0; m < 18; m++) { const mv = MV[m]; let v = 0; for (let i = 0; i < 11; i++) v = v * 2 + ((eo[mv.ep[i]] + mv.eo[i]) % 2); flipMove[t * 18 + m] = v; } }
+    for (let s = 0; s < 495; s++) { const mask = I2M[s]; for (let m = 0; m < 18; m++) { const mv = MV[m]; let nm = 0; for (let i = 0; i < 12; i++) if ((mask >> mv.ep[i]) & 1) nm |= 1 << i; sliceMove[s * 18 + m] = M2I[nm]; } }
+
+    cpMove = new Uint16Array(40320 * 10); epMove = new Uint16Array(40320 * 10); spMove = new Uint8Array(24 * 10);
+    const perm = new Array(8), np = new Array(8);
+    for (let r = 0; r < 40320; r++) {
+      unrankPerm(r, 8, perm);
+      for (let q = 0; q < 10; q++) {
+        const mv = MV[P2[q]];
+        for (let i = 0; i < 8; i++) np[i] = perm[mv.cp[i]];
+        cpMove[r * 10 + q] = rankPerm(np, 8);
+        for (let i = 0; i < 8; i++) np[i] = perm[mv.ep[i]];
+        epMove[r * 10 + q] = rankPerm(np, 8);
+      }
+    }
+    const p4 = new Array(4), n4 = new Array(4);
+    for (let r = 0; r < 24; r++) {
+      unrankPerm(r, 4, p4);
+      for (let q = 0; q < 10; q++) { const mv = MV[P2[q]]; for (let i = 0; i < 4; i++) n4[i] = p4[mv.ep[8 + i] - 8]; spMove[r * 10 + q] = rankPerm(n4, 4); }
+    }
+    prunTS = buildPrune(2187, 495, twistMove, sliceMove, 18, 0, SS);
+    prunFS = buildPrune(2048, 495, flipMove, sliceMove, 18, 0, SS);
+    prunCS = buildPrune(40320, 24, cpMove, spMove, 10, 0, 0);
+    prunES = buildPrune(40320, 24, epMove, spMove, 10, 0, 0);
+    ready = true;
+  }
+
+  // ------------------------------------------------------------- validação
+  const paridade = p => { let s = 0; const v = p.slice(); for (let i = 0; i < v.length; i++) while (v[i] !== i) { const j = v[i]; [v[i], v[j]] = [v[j], v[i]]; s ^= 1; } return s; };
+  function validar(cu) {
+    if (cu.co.reduce((a, b) => a + b, 0) % 3) throw new Error("Total corner twist is wrong (um canto está girado)");
+    if (cu.eo.reduce((a, b) => a + b, 0) % 2) throw new Error("Total edge flip is wrong (uma aresta está virada)");
+    if (paridade(cu.cp) !== paridade(cu.ep)) throw new Error("Parity error (duas peças trocadas)");
+  }
+
+  // ------------------------------------------------------------------ busca
+  function buscar(cu, maxLen, extraMs) {
+    const twist0 = twistOf(cu.co), flip0 = flipOf(cu.eo);
+    let mask0 = 0; for (let i = 0; i < 12; i++) if (cu.ep[i] >= 8) mask0 |= 1 << i;
+    const slice0 = M2I[mask0];
+    const path = new Int8Array(64);
+    let best = null, limit = maxLen, deadline = Infinity, nos = 0, tempoAcabou = false;
+
+    function p2dfs(c, e, s, togo, last, pos) {
+      if (togo === 0) {
+        if (c === 0 && e === 0 && s === 0) { best = Array.from(path.slice(0, pos)); limit = pos - 1; if (deadline === Infinity) deadline = now() + extraMs; return true; }
+        return false;
+      }
+      if (Math.max(prunCS[c * 24 + s], prunES[e * 24 + s]) > togo) return false;
+      for (let q = 0; q < 10; q++) {
+        const f = P2FACE[q];
+        if (f === last || (f === (last + 3) % 6 && f < last)) continue;
+        path[pos] = P2[q];
+        if (p2dfs(cpMove[c * 10 + q], epMove[e * 10 + q], spMove[s * 10 + q], togo - 1, f, pos + 1)) return true;
+      }
+      return false;
+    }
+    function fase2(d1, last) {
+      let cp = cu.cp.slice(), ep = cu.ep.slice();
+      for (let k = 0; k < d1; k++) {
+        const m = MV[path[k]], ncp = new Array(8), nep = new Array(12);
+        for (let i = 0; i < 8; i++) ncp[i] = cp[m.cp[i]];
+        for (let i = 0; i < 12; i++) nep[i] = ep[m.ep[i]];
+        cp = ncp; ep = nep;
+      }
+      const c = rankPerm(cp, 8), e = rankPerm(ep.slice(0, 8), 8), s = rankPerm(ep.slice(8).map(v => v - 8), 4);
+      const maxd2 = limit - d1;
+      if (maxd2 < 0) return;
+      if (Math.max(prunCS[c * 24 + s], prunES[e * 24 + s]) > maxd2) return;
+      for (let d2 = 0; d2 <= maxd2; d2++) if (p2dfs(c, e, s, d2, last, d1)) return;
+    }
+    function p1dfs(t, f, s, togo, last, pos) {
+      if (togo === 0) { if (t === 0 && f === 0 && s === SS) fase2(pos, last); return; }
+      if ((++nos & 0x3fff) === 0 && now() > deadline) { tempoAcabou = true; }
+      if (tempoAcabou) return;
+      if (Math.max(prunTS[t * 495 + s], prunFS[f * 495 + s]) > togo) return;
+      for (let m = 0; m < 18; m++) {
+        const fc = (m / 3) | 0;
+        if (fc === last || (fc === (last + 3) % 6 && fc < last)) continue;
+        path[pos] = m;
+        p1dfs(twistMove[t * 18 + m], flipMove[f * 18 + m], sliceMove[s * 18 + m], togo - 1, fc, pos + 1);
+        if (tempoAcabou) return;
+      }
+    }
+    for (let d1 = 0; d1 <= limit && !tempoAcabou; d1++) p1dfs(twist0, flip0, slice0, d1, -1, 0);
+    return best;
+  }
+
+  function resolvido(st, movs) {
+    let s = st.slice();
+    for (const m of movs) for (let k = 0; k <= m % 3; k++) s = girarFacelets(s, (m / 3) | 0);
+    return s.every((c, i) => c === RES[i]);
+  }
+
+  function solve(str, maxLen = 30, extraMs = 1200) {
+    const t0 = now();
+    init();
+    const st = str.trim().toUpperCase().split("");
+    if (st.length !== 54 || st.some(c => !FACES.includes(c))) throw new Error("A string do cubo precisa ter 54 letras entre U R F D L B");
+    if (st.every((c, i) => c === RES[i])) return { moves: [], ms: now() - t0 };
+    const cu = cubieDe(st);
+    validar(cu);
+    let sol = buscar(cu, maxLen, extraMs);
+    if (!sol) sol = buscar(cu, 40, extraMs);
+    if (!sol) throw new Error("Não encontrei solução (verifique a leitura do cubo)");
+    if (!resolvido(st, sol)) throw new Error("Falha interna: a solução não resolve o cubo (não enviada ao robô)");
+    return { moves: sol.map(NOME_MOV), ms: Math.round(now() - t0) };
+  }
+
+  // auto-testes internos usados pelos testes automatizados
+  const _teste = { MV, ID, cubieDe, compor, girarFacelets, RES, CSLOT, ESLOT, FL };
+  return { init, solve, _teste };
+})();
+</script>
 
 <script>
 "use strict";
@@ -716,7 +992,7 @@ function atualizarLeitura() {
   atualizarInstrucao();
 
   const box = document.getElementById("resultado");
-  if (n < 6) { box.hidden = true; return; }
+  if (n < 6) { box.hidden = true; limparSolucao(); return; }
   const r = resolverString(lidas);
   const final = r.escolhido ? r.escolhido.s : r.original;
   box.hidden = false;
@@ -738,6 +1014,7 @@ function atualizarLeitura() {
   }
   document.getElementById("btnCopiar").dataset.str = final;
   document.getElementById("btnCopiar").disabled = !r.escolhido;
+  if (r.escolhido) resolverNoNavegador(final); else limparSolucao();
 }
 
 function mostrarAviso(id, texto, tipo) {
@@ -813,6 +1090,7 @@ async function conectar() {
     definirEstado("on");
     pedirWakeLock();
     log("Conectado.", "ok");
+    if (solucao && !solucao.executada && el("chkAuto").checked) iniciarContagem();
   } catch (e) {
     if (e && e.name === "NotFoundError") log("Seleção cancelada.");
     else log(`Falha ao conectar: ${e.message || e}`, "erro");
@@ -828,6 +1106,7 @@ function aoDesconectar(_ev, silencioso) {
   const estava = document.body.dataset.estado !== "off";
   if (pendente) { const p = pendente; pendente = null; p.falha(new Error("conexão perdida")); }
   rxChar = null;
+  if (typeof cancelarContagem === "function") cancelarContagem();
   document.getElementById("devNome").textContent = "Nenhum ESP32 conectado";
   document.getElementById("btnConectar").hidden = false;
   document.getElementById("btnDesconectar").hidden = true;
@@ -878,6 +1157,125 @@ async function executar(cmds, titulo) {
 }
 
 // ===========================================================================
+// 7b) SOLVER (Web Worker) -> solução -> contagem -> executar() no ESP32
+// ===========================================================================
+const SOLVER_GLUE = `
+self.onmessage = (e) => {
+  const d = e.data;
+  try {
+    if (d.cmd === "init") { CubeSolver.init(); self.postMessage({ id: d.id, ok: true, init: true }); }
+    else { const r = CubeSolver.solve(d.cube, d.maxLen, d.ms); self.postMessage({ id: d.id, ok: true, moves: r.moves, ms: r.ms }); }
+  } catch (err) { self.postMessage({ id: d.id, ok: false, erro: String((err && err.message) || err) }); }
+};`;
+let solverW = null, solverLocal = null, solverId = 0;
+const solverPend = new Map();
+
+function solverLocalIniciar() {
+  try {
+    solverLocal = new Function(document.getElementById("solverSrc").textContent + "\n;return CubeSolver;")();
+    setTimeout(() => { solverLocal.init(); setPill("pillSolver", "ok", "Solver: pronto"); }, 0);
+  } catch (e) { setPill("pillSolver", "bad", "Solver: indisponível"); log(`Solver: ${e.message || e}`, "erro"); }
+}
+function iniciarSolver() {
+  setPill("pillSolver", "busy", "Solver: preparando…");
+  try {
+    const src = document.getElementById("solverSrc").textContent;
+    solverW = new Worker(URL.createObjectURL(new Blob([src, "\n", SOLVER_GLUE], { type: "text/javascript" })));
+    solverW.onmessage = ev => {
+      const d = ev.data;
+      if (d.init) { setPill("pillSolver", "ok", "Solver: pronto"); return; }
+      const p = solverPend.get(d.id); if (!p) return;
+      solverPend.delete(d.id);
+      if (d.ok) p.res(d); else p.rej(new Error(d.erro));
+    };
+    solverW.onerror = () => {
+      solverW = null;
+      solverPend.forEach(p => p.rej(new Error("o solver parou de responder")));
+      solverPend.clear(); solverLocalIniciar();
+    };
+    solverW.postMessage({ cmd: "init", id: 0 });
+  } catch (e) { solverW = null; solverLocalIniciar(); }
+}
+function pedirSolucao(cube) {
+  return new Promise((res, rej) => {
+    if (solverW) { const id = ++solverId; solverPend.set(id, { res, rej }); solverW.postMessage({ cmd: "solve", id, cube, maxLen: 30, ms: 1000 }); }
+    else if (solverLocal) { setTimeout(() => { try { res(solverLocal.solve(cube, 30, 1000)); } catch (e) { rej(e); } }, 20); }
+    else rej(new Error("solver indisponível"));
+  });
+}
+
+let solucao = null, ultimaStr = null, contagemT = null;
+function el(id) { return document.getElementById(id); }
+
+function limparSolucao() {
+  ultimaStr = null; solucao = null; cancelarContagem();
+  el("solucaoBox").hidden = true;
+  atualizarBotaoExec();
+}
+function atualizarBotaoExec() {
+  el("btnExecSol").disabled = !(document.body.dataset.estado === "on" && solucao);
+}
+
+async function resolverNoNavegador(str) {
+  if (str === ultimaStr) return;
+  ultimaStr = str; solucao = null; cancelarContagem();
+  el("solucaoBox").hidden = false;
+  el("solucaoMovs").hidden = true; el("solucaoInfo").textContent = "";
+  const av = el("avisoSolucao");
+  av.className = "aviso"; av.textContent = "Resolvendo…";
+  atualizarBotaoExec();
+  try {
+    const r = await pedirSolucao(str);
+    if (str !== ultimaStr) return;                       // chegou depois de uma nova leitura
+    if (!r.moves.length) { av.className = "aviso ok"; av.textContent = "O cubo já está resolvido. Nada a fazer."; return; }
+    const cmds = r.moves.flatMap(comandosDoMovimento).length;
+    solucao = { movs: r.moves, executada: false };
+    av.className = "aviso ok"; av.textContent = `Solução encontrada: ${r.moves.length} movimentos.`;
+    el("solucaoMovs").textContent = r.moves.join(" "); el("solucaoMovs").hidden = false;
+    el("solucaoInfo").textContent = `${cmds} comandos para o ESP32 · calculada em ${r.ms} ms · verificada contra o cubo lido.`;
+    el("seq").value = r.moves.join(" ");
+    log(`Solução: ${r.moves.join(" ")}`, "ok");
+    atualizarBotaoExec();
+    if (el("chkAuto").checked) {
+      if (rxChar && !ocupado) iniciarContagem();
+      else if (!rxChar) { const c = el("avisoContagem"); c.className = "aviso"; c.textContent = "Conecte o ESP32 para o robô executar a solução."; c.hidden = false; }
+    }
+  } catch (e) {
+    if (str !== ultimaStr) return;
+    av.className = "aviso erro"; av.textContent = `Não foi possível resolver: ${e.message || e}`;
+    log(`Solver: ${e.message || e}`, "erro");
+  }
+}
+
+function cancelarContagem() {
+  if (contagemT) { clearTimeout(contagemT); contagemT = null; }
+  el("avisoContagem").hidden = true; el("btnCancelarContagem").hidden = true;
+}
+function iniciarContagem() {
+  cancelarContagem();
+  if (!solucao || solucao.executada || !rxChar) return;
+  let n = Math.max(0, Math.min(60, Number(el("atraso").value) || 0));
+  if (n === 0) { executarSolucao(); return; }
+  const c = el("avisoContagem"); c.className = "aviso"; c.hidden = false; el("btnCancelarContagem").hidden = false;
+  const tick = () => {
+    c.textContent = `O robô começa em ${n} s. Coloque o cubo no robô: amarelo para cima, branco embaixo, vermelho de frente.`;
+    if (n === 0) { contagemT = null; executarSolucao(); return; }
+    n--; contagemT = setTimeout(tick, 1000);
+  };
+  tick();
+}
+function executarSolucao() {
+  if (!solucao || !rxChar || ocupado) return;
+  cancelarContagem();
+  let lista;
+  try { lista = lerSequencia(solucao.movs.join(" ")); } catch (e) { log(e.message, "erro"); return; }
+  const cmds = lista.flatMap(comandosDoMovimento);       // mesma cadeia dos botões: lerSequencia -> comandosDoMovimento -> executar
+  solucao.executada = true;
+  log(`Enviando ao robô: ${lista.length} movimentos, ${cmds.length} comandos.`);
+  executar(cmds, `Solução (${lista.length} mov.)`);
+}
+
+// ===========================================================================
 // 8) INTERFACE
 // ===========================================================================
 function setPill(id, estado, texto) {
@@ -891,6 +1289,7 @@ function definirEstado(e) {
   const livre = e === "on";
   document.querySelectorAll(".ctl, [data-cmd], [data-macro], [data-mov]").forEach(el => { el.disabled = !livre; });
   document.getElementById("btnParar").disabled = e !== "busy";
+  if (typeof atualizarBotaoExec === "function" && document.getElementById("btnExecSol")) atualizarBotaoExec();
 }
 function log(msg, tipo = "") {
   const li = document.createElement("li");
@@ -996,6 +1395,17 @@ function iniciar() {
   document.getElementById("btnLivre").addEventListener("click", rodarLivre);
   document.getElementById("livre").addEventListener("keydown", e => { if (e.key === "Enter") rodarLivre(); });
 
+  el("chkAuto").checked = carregar("cuboAuto", true);
+  el("atraso").value = carregar("cuboAtraso", 10);
+  el("chkAuto").addEventListener("change", e => {
+    guardar("cuboAuto", e.target.checked);
+    if (!e.target.checked) cancelarContagem(); else if (solucao && !solucao.executada && rxChar && !ocupado) iniciarContagem();
+  });
+  el("atraso").addEventListener("change", e => guardar("cuboAtraso", Number(e.target.value) || 0));
+  el("btnExecSol").addEventListener("click", executarSolucao);
+  el("btnCancelarContagem").addEventListener("click", () => { cancelarContagem(); el("chkAuto").checked = false; guardar("cuboAuto", false); log("Contagem cancelada; envio automático desligado."); });
+
+  iniciarSolver();
   definirEstado("off");
   atualizarLeitura();
   log("Pronto. Conecte o ESP32 e ligue a câmera.");
@@ -1003,7 +1413,8 @@ function iniciar() {
 
 // pequena API para testes automatizados
 window.cubo = { rgb2lab, ciede2000, classificar, rot90ccw, girar9, problemas, resolverString,
-                lerSequencia, comandosDoMovimento, ORDEM, ROT_PADRAO, setPaleta: p => { paleta = p; recalcularPaleta(); } };
+                lerSequencia, comandosDoMovimento, ORDEM, ROT_PADRAO, setPaleta: p => { paleta = p; recalcularPaleta(); },
+                carregarFaces: l => { lidas = l; alvo = ORDEM_SCAN.find(c => !lidas[c]) || ORDEM_SCAN[0]; atualizarLeitura(); } };
 iniciar();
 </script>
 </body>
